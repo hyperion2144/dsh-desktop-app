@@ -1,0 +1,61 @@
+name: CI Diagnose
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build (diagnostic -> step summary)
+        shell: bash
+        working-directory: desktop
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set +e
+          echo "::group::pnpm install"
+          pnpm install --frozen-lockfile > "$RUNNER_TEMP/ins.log" 2>&1
+          echo "install exit=$?"
+          tail -30 "$RUNNER_TEMP/ins.log"
+          echo "::endgroup::"
+          echo "### pnpm install" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -30 "$RUNNER_TEMP/ins.log" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::group::tauri build"
+          pnpm tauri build --target "$TARGET" > "$RUNNER_TEMP/build.log" 2>&1
+          code=$?
+          echo "tauri build exit=$code"
+          echo "::endgroup::"
+          {
+            echo "### tauri build --target $TARGET (exit $code)"
+            echo '```'
+            tail -120 "$RUNNER_TEMP/build.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
