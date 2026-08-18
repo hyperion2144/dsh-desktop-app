@@ -23,24 +23,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node + pnpm
+      # 官方 pnpm 安装 action；version 与 desktop/pnpm-lock.yaml 的 lockfileVersion 9.0 匹配。
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      # cache: pnpm 由 setup-node 负责安装依赖并缓存 pnpm store（跨平台路径自动处理），
+      # 不再需要手动 npm install -g pnpm / actions/cache。
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Install pnpm
-        run: npm install -g pnpm@9
-        shell: bash
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.local/share/pnpm/store
-            ~/Library/pnpm/store
-          key: ${{ runner.os }}-pnpm-${{ hashFiles('desktop/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
 
       - name: Rust setup
         uses: dtolnay/rust-toolchain@stable
@@ -52,10 +48,8 @@ jobs:
         with:
           workspaces: desktop/src-tauri -> target
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
-        shell: bash
-
+      # tauri-action 会先按 desktop/pnpm-lock.yaml 安装依赖，再用 desktop 的
+      # @tauri-apps/cli（npm CLI，devDependency）执行 tauri build —— 无需 cargo install tauri-cli。
       - name: Build & upload to release (tauri-action)
         uses: tauri-apps/tauri-action@v0
         env:
