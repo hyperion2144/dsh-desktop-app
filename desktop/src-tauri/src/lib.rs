@@ -402,34 +402,28 @@ fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
     Ok(child)
 }
 
-/// 生成替换左上角品牌的 CSS：隐藏官方 wordmark 与鱼 logo（均为 svg），
-/// 改为鲸鱼娘图标 + 「小南梁」文字。尺寸对齐原版 24px 高度基准
-/// （图标 24px、文字 17px/600/行高 24px、间距 8px）；图标用 128px 高清
-/// 源图 base64，避免 Retina 下发糊。选择器用 [class*="brand"] 通配，
-/// 避免被编译哈希类名（hHd-Xa_brand）的版本变化影响。
-fn brand_css() -> String {
-    use base64::Engine;
-    let png = include_bytes!("../icons/128x128.png");
-    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
-    format!(
-        r#"[class*="brand"] svg{{display:none !important}}[class*="brand"]{{display:inline-flex !important;align-items:center !important;gap:8px !important}}[class*="brand"]::before{{content:"";width:40px;height:40px;flex:none;display:inline-block;background:url("data:image/png;base64,{b64}") center/contain no-repeat;border-radius:8px}}[class*="brand"]::after{{content:"小南梁";font-size:17px;font-weight:600;line-height:24px;letter-spacing:.02em;white-space:nowrap}}[class*="railFish"]{{display:none !important}}"#
-    )
+/// 生成把 Web GUI 顶部区域设为可拖拽窗口的 CSS（macOS `titleBarStyle: "Overlay"`
+/// 需要显式拖拽区，否则窗口无法拖动）。仅设置 `-webkit-app-region: drag`，不改
+/// 任何视觉/图标/名称——Web GUI 原样保留。
+/// 选择器覆盖 sidebar 顶部品牌区与"鱼 logo"位（DSH Web GUI 编译产物稳定存在的类）。
+fn drag_region_css() -> String {
+    r#"[class*="brand"]{-webkit-app-region:drag !important}[class*="railFish"]{-webkit-app-region:drag !important}[class*="brand"] *{pointer-events:auto}[class*="brand"] a,[class*="brand"] button,[class*="brand"] input,[class*="brand"] [role="button"]{-webkit-app-region:no-drag !important}"#.to_string()
 }
 
-/// 导航完成后向 Web GUI 注入品牌样式（脚本自带 DOM 就绪重试）。
-fn inject_brand(app: AppHandle) {
+/// 导航完成后向 Web GUI 注入拖拽区 CSS（脚本自带 DOM 就绪重试）。
+fn inject_drag_region(app: AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(1500)).await;
-        let css_json = serde_json::to_string(&brand_css()).unwrap_or_default();
+        let css_json = serde_json::to_string(&drag_region_css()).unwrap_or_default();
         let script = format!(
-            "(function(){{var css={css_json};function t(){{if(!document.head)return false;var s=document.getElementById('xiaonanliang-brand');if(!s){{s=document.createElement('style');s.id='xiaonanliang-brand';s.textContent=css;document.head.appendChild(s);}}return true;}}if(!t()){{var i=setInterval(function(){{if(t())clearInterval(i);}},250);setTimeout(function(){{clearInterval(i);}},15000);}}}})();"
+            "(function(){{var css={css_json};function t(){{if(!document.head)return false;var s=document.getElementById('dsh-desktop-drag-region');if(!s){{s=document.createElement('style');s.id='dsh-desktop-drag-region';s.textContent=css;document.head.appendChild(s);}}return true;}}if(!t()){{var i=setInterval(function(){{if(t())clearInterval(i);}},250);setTimeout(function(){{clearInterval(i);}},15000);}}}})();"
         );
         if let Some(w) = handle.get_webview_window("main") {
             if let Err(e) = w.eval(&script) {
-                log::warn!("品牌样式注入失败：{e}");
+                log::warn!("拖拽区 CSS 注入失败：{e}");
             } else {
-                log::info!("小南梁品牌样式已注入（左上角 logo 与名称已替换）");
+                log::info!("macOS 标题栏 Overlay 拖拽区已注入（不改名称/图标）");
             }
         }
     });
@@ -549,7 +543,7 @@ fn notify_completed(app: &AppHandle, body: &str) {
             let _ = app
                 .notification()
                 .builder()
-                .title("小南梁 · 任务完成")
+                .title("Deepseek Harness · 任务完成")
                 .body(body)
                 .show();
             let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
@@ -642,7 +636,7 @@ async fn wait_ready_and_navigate(app: AppHandle, port: u16, nport: u16, ntoken: 
                     show_error(&app, "spawn-failed");
                     return;
                 }
-                inject_brand(app.clone());
+                inject_drag_region(app.clone());
                 // 导航后注入监听：0.3.0 在 setup 阶段提前注入，冷启动时脚本
                 // 落在加载页、随导航销毁（通知收不到的根因之二）。
                 inject_task_notifier(app.clone(), nport, &ntoken);
@@ -674,7 +668,7 @@ fn show_error(app: &AppHandle, reason: &str) {
     let _ = app
         .notification()
         .builder()
-        .title("小南梁 启动失败")
+        .title("Deepseek Harness 启动失败")
         .body(body)
         .show();
 }
@@ -817,15 +811,24 @@ fn pet_toggle_passthrough(app: AppHandle) -> bool {
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let pet = MenuItem::with_id(app, "pet", "显示/隐藏桌宠", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出小南梁", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出 Deepseek Harness", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &pet, &quit])?;
-    TrayIconBuilder::with_id("dsh-tray")
-        .icon(
+    // 托盘专用图标：从 64x64 PNG（macOS 菜单栏 32pt @2x = 64px 甜点尺寸）加载，
+    // 优先用 include_bytes 编译期嵌入；加载失败回退 default_window_icon。
+    // DeepSeek Harness 图标本身有颜色，不当模板图（icon_as_template=false）。
+    let icon: tauri::image::Image<'_> = tauri::image::Image::from_bytes(include_bytes!("../icons/64x64.png"))
+        .ok()
+        .map(tauri::image::Image::to_owned)
+        .map(tauri::image::Image::into)
+        .unwrap_or_else(|| {
             app.default_window_icon()
                 .expect("缺少应用图标")
-                .clone(),
-        )
-        .tooltip("小南梁")
+                .clone()
+        });
+    TrayIconBuilder::with_id("dsh-tray")
+        .icon(icon)
+        .icon_as_template(false)
+        .tooltip("Deepseek Harness")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -994,7 +997,7 @@ pub fn run() {
                                 .app_handle()
                                 .notification()
                                 .builder()
-                                .title("小南梁 仍在运行")
+                                .title("Deepseek Harness 仍在运行")
                                 .body("窗口已隐藏到菜单栏托盘，点击托盘图标可重新打开；托盘菜单可退出。")
                                 .show();
                         }
@@ -1068,11 +1071,13 @@ mod tests {
     }
 
     #[test]
-    fn brand_css_contains_brand_and_icon() {
-        let css = brand_css();
-        assert!(css.contains("小南梁"), "品牌 CSS 应含应用名");
-        assert!(css.contains("data:image/png;base64,"), "品牌 CSS 应内嵌图标");
-        assert!(css.contains("brand"), "应命中品牌选择器");
+    fn drag_region_css_marks_top_header_draggable() {
+        let css = drag_region_css();
+        assert!(css.contains("-webkit-app-region:drag"), "应启用 macOS 拖拽区");
+        assert!(css.contains("-webkit-app-region:no-drag"), "应排除交互元素");
+        assert!(css.contains("brand"), "应命中顶部品牌选择器");
+        assert!(!css.contains("data:image/png;base64,"), "不应注入任何图标（不改 Web GUI 视觉）");
+        assert!(!css.contains("Deepseek Harness"), "不应注入应用名（不改 Web GUI 文本）");
     }
 
     #[test]

@@ -1,26 +1,25 @@
-# 小南梁（dsh-desktop-app）
+# Deepseek Harness（dsh-desktop-app）
 
 [![awesome · DSH plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 [![npm](https://img.shields.io/npm/v/dsh-desktop-app)](https://www.npmjs.com/package/dsh-desktop-app)
 
-> 主人好呀～ 小南梁是 DeepSeek Harness 的**鲸鱼娘代码娘**，这里是小南梁的「国内落地 know-how + 技能包」，附带一个可用的 Tauri 桌面壳参考实现。
+> 主人好呀～ 这是 **Deepseek Harness** 桌面客户端仓库，把 DeepSeek Harness Web GUI 封装成 macOS/Windows 桌面应用。一键启动、托盘常驻、退出自动回收子进程。
 > 一键安装：`dsh plugin add dsh-desktop-app`（npm）或 `dsh plugin add github:happpsee/dsh-desktop-app`（GitHub），主人家的 agent 就学会「把 DSH 封装成桌面应用」的手艺了呢～
 
-**小南梁才不是又一个桌面壳**（GitHub 上同类已经多到打群架啦）。这个仓库真正值钱的是三点别处没有的看家本领：
+这个仓库把 DeepSeek Harness 做成桌面端（macOS + Windows 双平台），主要看点：
 
 1. **Windows 无管理员工具链方案**：无 VS Build Tools 也能构建 Tauri 2（xwin + rust-lld + clang-cl + 真 rc.exe），全部用户级安装，附配置模板与脚本
 2. **国内镜像哨兵机制**：rustup/cargo/npm/GitHub/NSIS 全套镜像 + subagent 超时判定，Windows 新环境不再卡外网
 3. **真机实测审计报告**：Win11 无管理员逐条实测 + 20 条修订清单（docs/）
 
-桌面壳本身（`desktop/`，macOS + Windows 双平台，托盘常驻 / 单实例 / 子进程回收 / 品牌注入 / 任务完成通知）作为这套 know-how 的**可运行参考实现**。
+桌面壳本身（`desktop/`，macOS + Windows 双平台，托盘常驻 / 单实例 / 子进程回收 / 任务完成通知 / macOS Overlay 标题栏）作为可运行参考实现。
 
-## 名字的来由
+## 命名
 
-- 「南」：梁总（DeepSeek 创始人梁文锋，广东湛江人，南方人）的南方之义
-- 「梁」：取其姓氏
-- 封面：鲸鱼娘（DeepSeek 官方鲸鱼的娘化 OC「溟月」，深海女仆工坊 maid-atelier），
-  与「小南梁」之名相配
-- 技术标识仍用 ASCII 的 `dsh-desktop-app` / `dsh-desktop`，中文只出现在展示层
+- 应用展示名：**Deepseek Harness**（与已安装的 `DeepSeek Harness.app` 保持一致）
+- 技术标识：ASCII 的 `dsh-desktop-app` / `dsh-desktop` / `com.arcreel.dsh-desktop`
+- 应用图标：复用已安装的 `DeepSeek Harness.app` 的 `icon.icns`（保真度最高的 macOS icns）
+- 应用内左上角图标：保留 DSH Web GUI 原始样式，仅注入 macOS 拖拽区 CSS（不改名/不改图标）
 
 ## 特性
 
@@ -31,7 +30,7 @@
 - **进程回收**：只回收本次启动 spawn 的 dsh 子进程，stdout/stderr 落盘日志
 - **单实例**：重复双击聚焦已有窗口，不会拉起第二个服务
 - **窗口状态记忆**：位置与大小自动恢复
-- **品牌注入**：窗口内左上角官方 logo/字标替换为鲸鱼娘 +「小南梁」
+- **macOS Overlay 标题栏**：主窗口使用 `titleBarStyle: "Overlay"`，系统标题栏叠在 Web GUI 之上（VS Code 风格），通过 `-webkit-app-region: drag` 注入把 Web GUI 顶部设为拖拽区；不改名称/不改图标
 - **鲸鱼娘桌宠**：透明置顶无边框小窗，纯 CSS 呼吸/漂浮动画 + 椭圆阴影；拖拽移动
   （4px 阈值区分点击）、左键唤起主窗、右键菜单（穿透开关/隐藏/退出）、任务完成
   弹气泡；位置记忆（多屏钳位 + 拖拽防抖）；托盘「显示/隐藏桌宠」开关
@@ -58,8 +57,8 @@ docs/      Windows 实测审计报告与构建笔记
 ### 直接安装（macOS）
 
 1. 确保已装 dsh：`npm i -g @deepseek-ai/dsh`
-2. 从 [Releases](../../releases) 下载 `小南梁_*.dmg`，拖入应用程序
-3. 双击「小南梁」；托盘菜单可退出
+2. 从 [Releases](../../releases) 下载 `Deepseek-Harness_*.dmg`，拖入应用程序
+3. 双击「Deepseek Harness」；托盘菜单可退出
 
 ### 从源码构建
 
@@ -88,15 +87,12 @@ cp -r skill ~/.claude/skills/dsh-desktop-app   # Claude Code / Claude Agent
 ## 许可
 
 - 代码与文档：**MIT**（见 [LICENSE](LICENSE)）
-- 鲸鱼娘图标（`desktop/src-tauri/icons/` 及加载页素材）：**CC BY-NC-SA 4.0 非商用**
-  - 角色 OC「溟月」by 上善无形；DeepSeek 二创 ZipZipPipe；修复 QYQCAMIAO
-  - 素材来源：[fornarwhal/deepseek-whale-girl-icon](https://github.com/fornarwhal/deepseek-whale-girl-icon)
-  - 许可证全文：`skill/resources/` 无此文件时见素材仓库；署名请勿移除
+- 应用图标来源：`/Applications/DeepSeek Harness.app/Contents/Resources/icon.icns`（已安装的桌面客户端原图，复用以保证图标一致）
+- 鲸鱼娘素材：CC BY-NC-SA 4.0 非商用素材仍随仓库保留（`skill/resources/whale-girl-LICENSE.txt`），如有启用可作为品牌辅助素材
 - 另请注意：DeepSeek 鲸鱼为官方商标，本应用是非官方客户端
 
 ## 已知限制
 
-- 品牌注入在窗口内手动刷新（Cmd+R）后会丢失，重开窗口恢复
 - 任务完成通知仍为 DOM 启发式（`data-state` 运行中标记），分不清成功/失败/被停、
   拿不到标题/token；权威信号 `turn/end` 的语义化升级方案见 docs/next-tasks.md
 - 桌宠：macOS 打包（DMG）后透明可能丢失（tauri issue #13415，dev 正常，需真机双验）；

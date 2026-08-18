@@ -1,4 +1,4 @@
-# 小南梁 · Windows 验收脚本（三条路径，源自实测验收清单）
+# Deepseek Harness · Windows 验收脚本（三条路径，源自实测验收清单）
 # 用法：.\scripts\acceptance.ps1 [-Bin target\debug\dsh-desktop.exe] [-Port 3080]
 param(
     [string]$Bin = "target\debug\dsh-desktop.exe",

@@ -1,4 +1,4 @@
-# 小南梁 · Windows 无管理员工具链 cargo 配置模板
+# Deepseek Harness · Windows 无管理员工具链 cargo 配置模板
 # 实测环境：Win11 无管理员权限、无 VS Build Tools、国内网络
 # 来源：docs/windows-build-notes.md §2 —— 全部组件用户级安装
 #

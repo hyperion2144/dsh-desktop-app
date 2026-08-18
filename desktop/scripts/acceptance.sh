@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# 小南梁 · macOS 验收脚本（三条路径，源自实测验收清单）
+# Deepseek Harness · macOS 验收脚本（三条路径，源自实测验收清单）
 # 用法：./scripts/acceptance.sh [binary] [port] [app_binary]
 # 默认 binary=target/debug/dsh-desktop，port=3080，
-# app_binary=src-tauri/target/release/bundle/macos/小南梁.app/Contents/MacOS/dsh-desktop
+# app_binary=src-tauri/target/release/bundle/macos/Deepseek Harness.app/Contents/MacOS/dsh-desktop
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BIN="${1:-target/debug/dsh-desktop}"
 PORT="${2:-3080}"
-APP_BIN="${3:-src-tauri/target/release/bundle/macos/小南梁.app/Contents/MacOS/dsh-desktop}"
+APP_BIN="${3:-src-tauri/target/release/bundle/macos/Deepseek Harness.app/Contents/MacOS/dsh-desktop}"
 
 # 单实例锁检查：同 identifier 实例在跑时，验收进程会被静默转交并立即退出
 #（exit 0 但零输出，造成假通过——必须前置检测）
 if pgrep -q -f "dsh-desktop"; then
   echo "检测到已有 dsh-desktop 实例在运行，单实例锁会拦截验收进程。"
-  echo "请先从托盘菜单退出小南梁（Cmd+Q 只是隐藏），再运行本脚本。"
+  echo "请先从托盘菜单退出 Deepseek Harness（Cmd+Q 只是隐藏），再运行本脚本。"
   exit 2
 fi
 
@@ -29,8 +29,8 @@ run_case() {
     tail -15 "$log"
     exit 1
   fi
-  if grep -qE "已导航到|正在停止 dsh|复用|品牌样式" "$log"; then
-    grep -E "已导航到|正在停止 dsh|复用|品牌样式" "$log" | head -4
+  if grep -qE "已导航到|正在停止 dsh|复用|拖拽区" "$log"; then
+    grep -E "已导航到|正在停止 dsh|复用|拖拽区" "$log" | head -4
   else
     echo "(日志无关键行，完整见 $log)"
   fi
