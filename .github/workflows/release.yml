@@ -38,6 +38,13 @@ jobs:
           cache: pnpm
           cache-dependency-path: desktop/pnpm-lock.yaml
 
+      # 关键：tauri-action 自己不安装依赖——这里显式 pnpm install，否则后面
+      # `pnpm tauri build` 找不到 node_modules/.bin/tauri，会在几十秒内快速 exit 1
+      #（release 曾因此在双平台即刻失败；诊断工作流靠显式 install 才成功）。
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: desktop
+
       - name: Rust setup
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -48,7 +55,7 @@ jobs:
         with:
           workspaces: desktop/src-tauri -> target
 
-      # tauri-action 会先按 desktop/pnpm-lock.yaml 安装依赖，再用 desktop 的
+      # 依赖已由「Install frontend dependencies」装好；tauri-action 用 desktop 的
       # @tauri-apps/cli（npm CLI，devDependency）执行 tauri build —— 无需 cargo install tauri-cli。
       - name: Build & upload to release (tauri-action)
         uses: tauri-apps/tauri-action@v0
