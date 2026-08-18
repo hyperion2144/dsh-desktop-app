@@ -1,5 +1,10 @@
 name: Release
 
+# 创建 GitHub Release + 上传资产需要 token 具备 contents: write（默认只读会报
+# "Resource not accessible by integration"）。
+permissions:
+  contents: write
+
 on:
   push:
     tags:
