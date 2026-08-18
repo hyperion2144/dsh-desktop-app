@@ -12,8 +12,9 @@
     "windows": [
       {
         "label": "main",
-        "title": "Deepseek Harness",
+        "title": "",
         "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "width": 1280,
         "height": 840,
         "minWidth": 940,

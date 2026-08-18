@@ -12,7 +12,7 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering},
         Mutex,
     },
     thread,
@@ -75,10 +75,12 @@ impl std::fmt::Display for SpawnError {
 struct DshState {
     /// 本次运行 spawn 的 dsh 子进程（None = 复用了已有实例）。
     child: Mutex<Option<Child>>,
-    /// 子进程是否由本次运行启动（决定退出时是否回收）。
+    /// 子进程是否由本次启动启动（决定退出时是否回收、重启时是否生效）。
     spawned_this_run: AtomicBool,
     /// spawn 失败标志（立即终止等待并跳错误页）。
     spawn_failed: AtomicBool,
+    /// 重启流程进行中（防止重复点击托盘重启项导致并发 kill/spawn）。
+    restarting: AtomicBool,
     /// 托盘"退出"标志（置位后放行窗口关闭与应用退出）。
     quitting: AtomicBool,
     /// 是否已提示过"隐藏到托盘"。
@@ -87,6 +89,13 @@ struct DshState {
     unread: AtomicU32,
     /// 桌宠上次落盘位置的时间（Moved 事件 400ms 防抖）。
     pet_save_at: Mutex<Option<Instant>>,
+    /// 任务通知服务器端口（重启 dsh 后复用同一端口重新注入 JS）。
+    notify_port: AtomicU16,
+    /// 任务通知服务器访问 token（仅启动时生成一次，重启复用）。
+    notify_token: Mutex<String>,
+    /// 双击拖拽区"缩放"前的主窗口几何（None = 当前处于标准尺寸，可触发放大；
+    /// Some = 当前已放大，再双击恢复到此几何）。Mutex 防并发双击。
+    pre_zoom_geom: Mutex<Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>>,
 }
 
 /// 定位 dsh 可执行文件。
@@ -402,28 +411,82 @@ fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
     Ok(child)
 }
 
-/// 生成把 Web GUI 顶部区域设为可拖拽窗口的 CSS（macOS `titleBarStyle: "Overlay"`
-/// 需要显式拖拽区，否则窗口无法拖动）。仅设置 `-webkit-app-region: drag`，不改
-/// 任何视觉/图标/名称——Web GUI 原样保留。
-/// 选择器覆盖 sidebar 顶部品牌区与"鱼 logo"位（DSH Web GUI 编译产物稳定存在的类）。
-fn drag_region_css() -> String {
-    r#"[class*="brand"]{-webkit-app-region:drag !important}[class*="railFish"]{-webkit-app-region:drag !important}[class*="brand"] *{pointer-events:auto}[class*="brand"] a,[class*="brand"] button,[class*="brand"] input,[class*="brand"] [role="button"]{-webkit-app-region:no-drag !important}"#.to_string()
+/// 生成注入到 Web GUI 的拖拽区脚本。
+///
+/// 只把窗口拖动挂在「左上角预留的空白拖拽条」上（sidebar 顶部 36px、把
+/// logoRow 顶下去的那条 spacer），通过 Tauri 的 `startDragging()` 精确触发
+/// 原生窗口拖动；**不使用** `-webkit-app-region: drag` / `setMovableByWindowBackground`——
+/// 后者会把整个窗口背景变成拖动手柄，导致「全应用都能拖」。
+///
+/// 设计（保持原有 DOM 方案）：
+/// - 在 `[class*="hHd-Xa_root"]` 顶部插入 36px 透明 bar，把 logoRow 顶下去，
+///   留出左上角空白拖拽区；`margin-left: 80px` 避开红绿灯点击区；
+/// - 拖拽条上「按下超 4px 位移」才启动系统拖拽（点击/双击不受影响），
+///   双击仍触发 `toggle_zoom`；
+/// - 兜底：SPA 重渲染换掉拖拽条后，每 4s 重建（仍只挂在这一条上）。
+fn drag_injection_script(dport: u16, dtoken: &str) -> String {
+    let js = r#"(function(){
+  var BAR_ID = 'dsh-desktop-drag-bar';
+  var DPORT = __DPORT__, DTOKEN = "__DTOKEN__";
+  // 自诊断：把拖拽链路的关键状态 POST 到 notify 桥的 /dragdiag（仅写日志，不弹通知）。
+  function diag(msg){
+    try {
+      fetch('http://127.0.0.1:'+DPORT+'/dragdiag', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+DTOKEN},
+        body: JSON.stringify({body: msg})
+      });
+    } catch(e){}
+  }
+  // 拖拽交由 Tauri 核心自带的 drag.js 处理：给拖拽条挂 `data-tauri-drag-region`
+  // 原生属性，框架在 mousedown 当下调用 plugin:window|start_dragging（scripts/drag.js，
+  // init script 注入，跨源页同样生效；macOS 双击放大由框架自带逻辑处理）。
+  // 不再自写 startDragging / pointer 处理器——避免与框架的 mousedown 双重触发。
+  function ensureSpacer(){
+    var root = document.querySelector('[class*="hHd-Xa_root"]');
+    if(!root) return false;
+    if(document.getElementById(BAR_ID)) return true;
+    var bar = document.createElement('div');
+    bar.id = BAR_ID;
+    bar.setAttribute('data-tauri-drag-region', '');
+    bar.style.cssText = 'height:36px;margin-left:80px;background:transparent;flex:0 0 auto;user-select:none;-webkit-user-select:none;cursor:grab;';
+    // 插到 logoRow 前面（把 logo 顶下去，留出左上角空白拖拽区）。
+    var logoRow = root.querySelector('[class*="logoRow"]');
+    if(logoRow && logoRow.parentNode === root){ root.insertBefore(bar, logoRow); }
+    else { root.insertBefore(bar, root.firstChild); }
+    diag('bar-created; data-tauri-drag-region set; internals='+(typeof window.__TAURI_INTERNALS__));
+    return true;
+  }
+  if(!ensureSpacer()){
+    var j = setInterval(function(){ if(ensureSpacer()) clearInterval(j); }, 250);
+    setTimeout(function(){ clearInterval(j); }, 15000);
+  }
+  // SPA 重渲染兜底：每 4s 检查一次，拖拽条被替换掉就重建（仍只挂在同一条上）。
+  setInterval(function(){ ensureSpacer(); }, 4000);
+})();"#;
+    js.replace("__DPORT__", &dport.to_string())
+        .replace("__DTOKEN__", dtoken)
 }
 
-/// 导航完成后向 Web GUI 注入拖拽区 CSS（脚本自带 DOM 就绪重试）。
-fn inject_drag_region(app: AppHandle) {
+/// 导航完成后向 Web GUI 注入拖拽区（执行 `drag_injection_script`）。
+///
+/// 「启动页 → GUI」是跨文档导航，会把早前注入的脚本整页销毁；这里改为周期性
+/// 重注入（每 2s 一次、共 ~20s），确保最终落在 GUI 页面。脚本自带守卫与 4s
+/// 自愈，重复 eval 幂等无害。
+fn inject_drag_region(app: AppHandle, nport: u16, ntoken: String) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        let css_json = serde_json::to_string(&drag_region_css()).unwrap_or_default();
-        let script = format!(
-            "(function(){{var css={css_json};function t(){{if(!document.head)return false;var s=document.getElementById('dsh-desktop-drag-region');if(!s){{s=document.createElement('style');s.id='dsh-desktop-drag-region';s.textContent=css;document.head.appendChild(s);}}return true;}}if(!t()){{var i=setInterval(function(){{if(t())clearInterval(i);}},250);setTimeout(function(){{clearInterval(i);}},15000);}}}})();"
-        );
         if let Some(w) = handle.get_webview_window("main") {
-            if let Err(e) = w.eval(&script) {
-                log::warn!("拖拽区 CSS 注入失败：{e}");
-            } else {
-                log::info!("macOS 标题栏 Overlay 拖拽区已注入（不改名称/图标）");
+            let script = drag_injection_script(nport, &ntoken);
+            for i in 0..10_u32 {
+                if i > 0 {
+                    tokio::time::sleep(Duration::from_millis(2000)).await;
+                }
+                if let Err(e) = w.eval(&script) {
+                    log::warn!("拖拽区注入失败：{e}");
+                } else if i == 0 {
+                    log::info!("macOS Overlay 拖拽区已注入：仅左上角 36px 空白条可拖（startDragging，已禁用整窗 movableByWindowBackground）");
+                }
             }
         }
     });
@@ -484,15 +547,38 @@ Access-Control-Allow-Methods: POST, OPTIONS\r\n\
 Access-Control-Allow-Headers: Content-Type, Authorization\r\n\
 Access-Control-Max-Age: 86400\r\n";
 
+/// 完整读取一条 HTTP 请求（头 + 可能分段的 body，按 Content-Length 收齐）。
+/// 单次 read 只读头时 body 会丢（自诊断 / 通知的 JSON body 偶发单独到达）。
+async fn read_full_request(sock: &mut tokio::net::TcpStream) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match sock.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+        let s = String::from_utf8_lossy(&buf);
+        let Some((head, body)) = s.split_once("\r\n\r\n") else { continue };
+        let clen = head.lines().find_map(|l| {
+            let l = l.to_ascii_lowercase();
+            l.strip_prefix("content-length:")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+        });
+        match clen {
+            Some(len) if body.len() >= len || buf.len() < 5 => break, // 收齐或请求过小
+            Some(_) => continue, // 等剩余 body
+            None => break,       // 无 body：头完即止
+        }
+    }
+    String::from_utf8_lossy(&buf).to_string()
+}
+
 /// 处理单条通知连接：先应答 CORS 预检，再校验 Bearer token、解析 JSON body、触发通知。
 async fn handle_notify_conn(sock: &mut tokio::net::TcpStream, app: &AppHandle, token: &str) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut buf = [0u8; 4096];
-    let n = match sock.read(&mut buf).await {
-        Ok(n) if n > 0 => n,
-        _ => return,
-    };
-    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+    use tokio::io::AsyncWriteExt;
+    let req = read_full_request(sock).await;
     // 预检 OPTIONS 不带 body、不校验 token，回 204 + CORS 头后由浏览器发起正式 POST。
     if req.starts_with("OPTIONS ") {
         let _ = sock
@@ -506,6 +592,18 @@ async fn handle_notify_conn(sock: &mut tokio::net::TcpStream, app: &AppHandle, t
     if !req.contains(&format!("Bearer {token}")) {
         let _ = sock
             .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+            .await;
+        return;
+    }
+    // 拖拽自诊断路由：仅记录日志，不触发通知/角标（供排查 startDragging 链路）。
+    if req.starts_with("POST /dragdiag ") {
+        let body = req.split("\r\n\r\n").nth(1).unwrap_or("").trim().to_string();
+        log::info!("[dragdiag] {body}");
+        let _ = sock
+            .write_all(
+                format!("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n{CORS_HEADERS}\r\n")
+                    .as_bytes(),
+            )
             .await;
         return;
     }
@@ -636,7 +734,7 @@ async fn wait_ready_and_navigate(app: AppHandle, port: u16, nport: u16, ntoken: 
                     show_error(&app, "spawn-failed");
                     return;
                 }
-                inject_drag_region(app.clone());
+                inject_drag_region(app.clone(), nport, ntoken.clone());
                 // 导航后注入监听：0.3.0 在 setup 阶段提前注入，冷启动时脚本
                 // 落在加载页、随导航销毁（通知收不到的根因之二）。
                 inject_task_notifier(app.clone(), nport, &ntoken);
@@ -807,12 +905,96 @@ fn pet_toggle_passthrough(app: AppHandle) -> bool {
     st.passthrough
 }
 
+/// 双击拖拽区触发 macOS 风格的"zoom"——把窗口几何切到当前屏幕的 work area
+///（MenuBar 与 Dock 不被覆盖），再次双击恢复到之前的几何。不是全屏 maximize
+///（不调用 NSWindow zoom:，那在 WKWebView 下不会自动放大，且语义偏 Win 风格）。
+///
+/// work_area 由 `available_monitors` 取，与 NSWindow.visibleFrame 同语义。
+fn current_monitor_for_window(
+    window: &tauri::WebviewWindow,
+) -> Option<tauri::Monitor> {
+    let pos = window.outer_position().ok()?;
+    let monitors = window.available_monitors().ok()?;
+    // 优先匹配窗口中心所在屏（窗口跨屏时取主屏兜底）
+    let size = window.outer_size().ok()?;
+    let cx = pos.x + (size.width as i32) / 2;
+    let cy = pos.y + (size.height as i32) / 2;
+    monitors
+        .into_iter()
+        .find(|m| {
+            let p = m.position();
+            let s = m.size();
+            cx >= p.x && cx < p.x + s.width as i32 && cy >= p.y && cy < p.y + s.height as i32
+        })
+        .or_else(|| window.primary_monitor().ok().flatten())
+}
+
+#[tauri::command]
+fn toggle_zoom(window: tauri::WebviewWindow, state: tauri::State<DshState>) {
+    let mut prev = match state.pre_zoom_geom.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if prev.is_none() {
+        // 当前未放大 → 记录旧几何，把窗口设到 work area
+        let pos = match window.outer_position() {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("[zoom] 读不到 outer_position：{e}");
+                return;
+            }
+        };
+        let size = match window.outer_size() {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("[zoom] 读不到 outer_size：{e}");
+                return;
+            }
+        };
+        let Some(mon) = current_monitor_for_window(&window) else {
+            log::warn!("[zoom] 找不到窗口所在显示器，跳过");
+            return;
+        };
+        let wa = mon.work_area();
+        let target_pos = tauri::PhysicalPosition::new(wa.position.x, wa.position.y);
+        let target_size = tauri::PhysicalSize::new(wa.size.width, wa.size.height);
+        if let Err(e) = window.set_position(target_pos) {
+            log::warn!("[zoom] set_position 失败：{e}");
+            return;
+        }
+        if let Err(e) = window.set_size(target_size) {
+            log::warn!("[zoom] set_size 失败：{e}");
+            return;
+        }
+        *prev = Some((pos, size));
+        log::info!(
+            "[zoom] 已放大到显示器 work area（{}x{} at {},{}），原几何已暂存",
+            wa.size.width, wa.size.height, wa.position.x, wa.position.y
+        );
+    } else {
+        // 当前已放大 → 恢复旧几何
+        if let Some((pos, size)) = prev.take() {
+            if let Err(e) = window.set_position(pos) {
+                log::warn!("[zoom] 恢复 set_position 失败：{e}");
+            }
+            if let Err(e) = window.set_size(size) {
+                log::warn!("[zoom] 恢复 set_size 失败：{e}");
+            }
+            log::info!(
+                "[zoom] 已恢复到 zoom 前几何（{}x{} at {},{}）",
+                size.width, size.height, pos.x, pos.y
+            );
+        }
+    }
+}
+
 /// 构建菜单栏托盘：左键显示窗口，菜单提供显示/隐藏桌宠/退出。
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let pet = MenuItem::with_id(app, "pet", "显示/隐藏桌宠", true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", "重启 dsh 服务", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出 Deepseek Harness", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &pet, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &pet, &restart, &quit])?;
     // 托盘专用图标：从 64x64 PNG（macOS 菜单栏 32pt @2x = 64px 甜点尺寸）加载，
     // 优先用 include_bytes 编译期嵌入；加载失败回退 default_window_icon。
     // DeepSeek Harness 图标本身有颜色，不当模板图（icon_as_template=false）。
@@ -834,6 +1016,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app),
             "pet" => toggle_pet(app),
+            "restart" => restart_dsh(app),
             "quit" => {
                 app.state::<DshState>().quitting.store(true, Ordering::SeqCst);
                 app.exit(0);
@@ -852,6 +1035,78 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+/// 重启 dsh web 服务（不退出桌面端）：仅当本次启动 spawn 过 dsh 子进程时生效。
+///
+/// 复用当前会话中已有 dsh 的场景（`spawned_this_run=false`）直接退出，
+/// 让用户从浏览器/终端手动重启，避免桌面端误杀其他进程。
+/// 通知服务器在 setup 阶段就已启动并常驻，重启时复用同一端口/token。
+fn restart_dsh(app: &AppHandle) {
+    let state = app.state::<DshState>();
+    if !state.spawned_this_run.load(Ordering::SeqCst) {
+        log::warn!("本次启动未 spawn dsh（复用了已有实例），重启操作跳过");
+        let _ = app
+            .notification()
+            .builder()
+            .title("Deepseek Harness")
+            .body("复用了已有的 dsh 服务，请从原实例手动重启。")
+            .show();
+        return;
+    }
+    if state.restarting.swap(true, Ordering::SeqCst) {
+        log::warn!("已在重启中，忽略重复触发");
+        return;
+    }
+    log::info!("[restart] 托盘触发重启 dsh 服务");
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // 1) 杀掉现有 dsh 子进程
+        let port = app_port();
+        if let Some(mut child) = handle.state::<DshState>().child.lock().unwrap().take() {
+            let pid = child.id();
+            log::info!("[restart] 停止旧 dsh 子进程（PID {pid}）");
+            let _ = child.kill();
+            let _ = child.wait();
+            log::info!("[restart] 旧 dsh 已退出");
+        }
+        // 2) 等端口释放（kill 后 SO_REUSEADDR 偶发未及时释放）
+        for _ in 0..30 {
+            if !port_open(port) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // 3) 启动新 dsh
+        match spawn_dsh(port) {
+            Ok(child) => {
+                let new_pid = child.id();
+                log::info!("[restart] 新 dsh 子进程已启动（PID {new_pid}）");
+                *handle.state::<DshState>().child.lock().unwrap() = Some(child);
+            }
+            Err(e) => {
+                let msg = match &e {
+                    SpawnError::NotFound(s) | SpawnError::Other(s) => s.clone(),
+                };
+                log::error!("[restart] spawn 失败：{msg}");
+                let _ = handle
+                    .notification()
+                    .builder()
+                    .title("Deepseek Harness · 重启失败")
+                    .body(&format!("spawn 失败：{msg}"))
+                    .show();
+                handle.state::<DshState>().restarting.store(false, Ordering::SeqCst);
+                return;
+            }
+        }
+        // 4) 重置失败标志并等待就绪 + 重新导航主窗口
+        handle.state::<DshState>().spawn_failed.store(false, Ordering::SeqCst);
+        let nport = handle.state::<DshState>().notify_port.load(Ordering::SeqCst);
+        let ntoken = handle.state::<DshState>().notify_token.lock().unwrap().clone();
+        wait_ready_and_navigate(handle.clone(), port, nport, ntoken).await;
+        handle.state::<DshState>().restarting.store(false, Ordering::SeqCst);
+        log::info!("[restart] 重启流程完成");
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -881,16 +1136,21 @@ pub fn run() {
             pet_show_main,
             pet_hide,
             pet_quit,
-            pet_toggle_passthrough
+            pet_toggle_passthrough,
+            toggle_zoom
         ])
-        .manage(DshState {
+.manage(DshState {
             child: Mutex::new(None),
             spawned_this_run: AtomicBool::new(false),
             spawn_failed: AtomicBool::new(false),
+            restarting: AtomicBool::new(false),
             quitting: AtomicBool::new(false),
             tray_tip_shown: AtomicBool::new(false),
             unread: AtomicU32::new(0),
             pet_save_at: Mutex::new(None),
+            notify_port: AtomicU16::new(0),
+            notify_token: Mutex::new(String::new()),
+            pre_zoom_geom: Mutex::new(None),
         })
         .setup(|app| {
             let port = app_port();
@@ -916,14 +1176,19 @@ pub fn run() {
                     }
                 }
             }
-            // 先起通知桥，把端口/token 交给导航任务；导航完成后再注入监听脚本
-            //（0.3.0 在导航前注入，冷启动时脚本随加载页销毁）。
+// 先起通知桥，把端口/token 交给导航任务并保存到 state（重启 dsh 时复用）；
+// 导航完成后再注入监听脚本（0.3.0 在导航前注入，冷启动时脚本随加载页销毁）。
             let (nport, ntoken) = start_notify_server(app.handle().clone());
+            state.notify_port.store(nport, Ordering::SeqCst);
+            *state.notify_token.lock().unwrap() = ntoken.clone();
             let handle = app.handle().clone();
             let nav_token = ntoken.clone();
             tauri::async_runtime::spawn(async move {
                 wait_ready_and_navigate(handle, port, nport, nav_token).await;
             });
+            // 不再设置 NSWindow movableByWindowBackground —— 那会让整个窗口背景
+            // 都能被拖动（"全应用可拖"）。窗口拖动只由注入脚本里挂在上方空白
+            // 拖拽条上的 startDragging() 精确触发。
             // 测试钩子：DSH_DESKTOP_AUTO_QUIT=1 时延迟自动退出（模拟托盘退出，验证子进程回收）
             if std::env::var("DSH_DESKTOP_AUTO_QUIT").as_deref() == Ok("1") {
                 let handle = app.handle().clone();
@@ -1071,13 +1336,51 @@ mod tests {
     }
 
     #[test]
-    fn drag_region_css_marks_top_header_draggable() {
-        let css = drag_region_css();
-        assert!(css.contains("-webkit-app-region:drag"), "应启用 macOS 拖拽区");
-        assert!(css.contains("-webkit-app-region:no-drag"), "应排除交互元素");
-        assert!(css.contains("brand"), "应命中顶部品牌选择器");
-        assert!(!css.contains("data:image/png;base64,"), "不应注入任何图标（不改 Web GUI 视觉）");
-        assert!(!css.contains("Deepseek Harness"), "不应注入应用名（不改 Web GUI 文本）");
+    fn drag_injection_script_precise_drag() {
+        let js = drag_injection_script(12345, "test-token");
+        // 拖拽只能挂在左上角预留的空白条上（startDragging），不得启用整窗拖动。
+        assert!(js.contains("dsh-desktop-drag-bar"), "注入脚本应创建左上角拖拽条");
+        assert!(js.contains("data-tauri-drag-region"), "应挂 Tauri 原生 data-tauri-drag-region 属性（框架级 start_dragging）");
+        assert!(js.contains("hHd-Xa_root"), "应定位 sidebar 根容器以插入空白拖拽条");
+        assert!(js.contains("logoRow"), "拖拽条应插在 logoRow 前（把 logo 顶下去留出空白区）");
+        assert!(!js.contains("-webkit-app-region"), "不应再使用 -webkit-app-region（会退化为整窗拖拽）");
+        assert!(!js.contains("movableByWindowBackground"), "不应再让整个窗口背景可拖");
+        assert!(!js.contains("data:image/png;base64,"), "不应注入任何图标（不改 Web GUI 视觉）");
+        assert!(!js.contains("Deepseek Harness"), "不应注入应用名（不改 Web GUI 文本）");
+    }
+
+    #[test]
+    fn dsh_state_default_field_types() {
+        // DshState 新增字段（notify_port / notify_token / restarting）默认值校验。
+        use std::sync::atomic::Ordering;
+        let state = DshState {
+            child: Mutex::new(None),
+            spawned_this_run: AtomicBool::new(false),
+            spawn_failed: AtomicBool::new(false),
+            restarting: AtomicBool::new(false),
+            quitting: AtomicBool::new(false),
+            tray_tip_shown: AtomicBool::new(false),
+            unread: AtomicU32::new(0),
+            pet_save_at: Mutex::new(None),
+            notify_port: AtomicU16::new(0),
+            notify_token: Mutex::new(String::new()),
+            pre_zoom_geom: Mutex::new(None),
+        };
+        assert!(!state.restarting.load(Ordering::SeqCst));
+        assert_eq!(state.notify_port.load(Ordering::SeqCst), 0);
+        assert!(state.notify_token.lock().unwrap().is_empty());
+        assert!(state.pre_zoom_geom.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn pre_zoom_geom_starts_unset() {
+        // 双击放大前的几何必须从 None 起步，否则启动后第一次双击会把当前尺寸
+        // 当成"已放大态"误恢复回去。
+        let g = Mutex::new(None);
+        assert!(g.lock().unwrap().is_none());
+        *g.lock().unwrap() = Some((tauri::PhysicalPosition::new(100, 200),
+                                    tauri::PhysicalSize::new(800, 600)));
+        assert!(g.lock().unwrap().is_some());
     }
 
     #[test]
@@ -1086,3 +1389,4 @@ mod tests {
         assert_eq!(SpawnError::Other("boom".into()).to_string(), "boom");
     }
 }
+

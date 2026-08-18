@@ -19,7 +19,7 @@
 - 应用展示名：**Deepseek Harness**（与已安装的 `DeepSeek Harness.app` 保持一致）
 - 技术标识：ASCII 的 `dsh-desktop-app` / `dsh-desktop` / `com.arcreel.dsh-desktop`
 - 应用图标：复用已安装的 `DeepSeek Harness.app` 的 `icon.icns`（保真度最高的 macOS icns）
-- 应用内左上角图标：保留 DSH Web GUI 原始样式，仅注入 macOS 拖拽区 CSS（不改名/不改图标）
+- 应用内左上角图标：保留 DSH Web GUI 原始样式；仅在 sidebar 顶部注入透明拖拽条把 logo 顶下去，留出的左上角空白区作为唯一拖拽区（不改名/不改图标）
 
 ## 特性
 
@@ -30,7 +30,7 @@
 - **进程回收**：只回收本次启动 spawn 的 dsh 子进程，stdout/stderr 落盘日志
 - **单实例**：重复双击聚焦已有窗口，不会拉起第二个服务
 - **窗口状态记忆**：位置与大小自动恢复
-- **macOS Overlay 标题栏**：主窗口使用 `titleBarStyle: "Overlay"`，系统标题栏叠在 Web GUI 之上（VS Code 风格），通过 `-webkit-app-region: drag` 注入把 Web GUI 顶部设为拖拽区；不改名称/不改图标
+- **macOS Overlay 标题栏**：主窗口使用 `titleBarStyle: "Overlay"`，系统标题栏叠在 Web GUI 之上（VS Code 风格）；窗口拖动只挂在左上角预留的空白拖拽条上（注入 36px 透明条把 logo 顶下去，`startDragging()` 精确到手柄区），不禁用任何其它区域的交互、不整窗可拖；不改名称/不改图标
 - **鲸鱼娘桌宠**：透明置顶无边框小窗，纯 CSS 呼吸/漂浮动画 + 椭圆阴影；拖拽移动
   （4px 阈值区分点击）、左键唤起主窗、右键菜单（穿透开关/隐藏/退出）、任务完成
   弹气泡；位置记忆（多屏钳位 + 拖拽防抖）；托盘「显示/隐藏桌宠」开关
