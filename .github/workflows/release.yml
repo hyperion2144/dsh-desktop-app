@@ -23,15 +23,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node + pnpm
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: desktop/pnpm-lock.yaml
 
       - name: Install pnpm
-        run: npm install -g pnpm
+        run: npm install -g pnpm@9
+        shell: bash
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/Library/pnpm/store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('desktop/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
 
       - name: Rust setup
         uses: dtolnay/rust-toolchain@stable
@@ -45,6 +54,7 @@ jobs:
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
+        shell: bash
 
       - name: Build & upload to release (tauri-action)
         uses: tauri-apps/tauri-action@v0
