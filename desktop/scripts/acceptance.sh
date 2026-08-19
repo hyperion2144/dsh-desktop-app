@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Deepseek Harness · macOS 验收脚本（三条路径，源自实测验收清单）
 # 用法：./scripts/acceptance.sh [binary] [port] [app_binary]
-# 默认 binary=target/debug/dsh-desktop，port=3081（桌面壳专用端口），
+# 默认 binary=target/debug/dsh-desktop，port=3080，
 # app_binary=src-tauri/target/release/bundle/macos/Deepseek Harness.app/Contents/MacOS/dsh-desktop
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BIN="${1:-target/debug/dsh-desktop}"
-PORT="${2:-3081}"
+PORT="${2:-3080}"
 APP_BIN="${3:-src-tauri/target/release/bundle/macos/Deepseek Harness.app/Contents/MacOS/dsh-desktop}"
 
 # 单实例锁检查：同 identifier 实例在跑时，验收进程会被静默转交并立即退出

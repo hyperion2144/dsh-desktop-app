@@ -287,8 +287,7 @@ light.exe 报 LGHT0311（codepage 1252 编不了中文）必失败；resources/t
 - **状态**：`DshState` = `child: Mutex<Option<Child>>` + `spawned_this_run` /
   `spawn_failed` / `quitting` / `tray_tip_shown`（AtomicBool）
 - **启动**（setup）：`TcpStream::connect_timeout`（300ms）探测 127.0.0.1:port
-  （默认 3081——桌面壳专用端口，env `DSH_DESKTOP_PORT` 覆盖；不再探测/复用 3080）——
-  已监听则复用（不 spawn、退出不杀）；
+  （默认 3080，env `DSH_DESKTOP_PORT` 覆盖）——已监听则复用（降级接入，不 spawn、退出不杀）；
   空闲则 spawn；spawn 失败按 SpawnError 区分 NotFound（错误页 not-found）/
   Other（错误页 spawn-failed），失败后轮询任务直接 return、不二次导航覆盖错误页；
   async 任务每 500ms 轮询、60s 超时，就绪后
@@ -364,22 +363,22 @@ by 上善无形、二创 ZipZipPipe、修复 QYQCAMIAO）与许可，保留 LICE
 cd desktop && pnpm tauri build   # mac 出 .app/.dmg，win 出 .msi/-setup.exe
 ```
 
-**A 复用路径**（专用端口 3081 已有残留实例）：
+**A 复用路径**（3080 已有 dsh web）：
 - mac：`DSH_DESKTOP_AUTO_QUIT=1 ./target/debug/dsh-desktop`
 - win：`$env:DSH_DESKTOP_AUTO_QUIT="1"; .\target\debug\dsh-desktop.exe`
-- 期望日志：「已有服务在监听，直接复用」→「已导航到 http://127.0.0.1:3081/」→
+- 期望日志：「已有服务在监听，直接复用」→「已导航到 http://127.0.0.1:3080/」→
   正常退出且不杀已有 dsh
 
-**B 拉起+回收**（3082 端口）：
-- mac：`DSH_DESKTOP_PORT=3082 DSH_DESKTOP_AUTO_QUIT=1 ./target/debug/dsh-desktop`
-- win：`$env:DSH_DESKTOP_PORT="3082"; $env:DSH_DESKTOP_AUTO_QUIT="1"; .\target\debug\dsh-desktop.exe`
-- 期望日志：spawn → `[dsh] dsh web: http://127.0.0.1:3082` → 导航 → 退出时
-  「正在停止 dsh 子进程」；跑完端口空闲（mac：`lsof -nP -iTCP:3082`；
-  win：`Get-NetTCPConnection -LocalPort 3082 -State Listen`）
+**B 拉起+回收**（3081 端口）：
+- mac：`DSH_DESKTOP_PORT=3081 DSH_DESKTOP_AUTO_QUIT=1 ./target/debug/dsh-desktop`
+- win：`$env:DSH_DESKTOP_PORT="3081"; $env:DSH_DESKTOP_AUTO_QUIT="1"; .\target\debug\dsh-desktop.exe`
+- 期望日志：spawn → `[dsh] dsh web: http://127.0.0.1:3081` → 导航 → 退出时
+  「正在停止 dsh 子进程」；跑完端口空闲（mac：`lsof -nP -iTCP:3081`；
+  win：`Get-NetTCPConnection -LocalPort 3081 -State Listen`）
 
 **C GUI 启动场景**（受限 PATH 模拟双击，验证兜底探测）：
-- mac：`env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" DSH_DESKTOP_PORT=3083 DSH_DESKTOP_AUTO_QUIT=1 "<bundle>/小南梁.app/Contents/MacOS/dsh-desktop"`
-- win：`$env:PATH="$env:SystemRoot\system32;$env:SystemRoot"; $env:DSH_DESKTOP_PORT="3083"; $env:DSH_DESKTOP_AUTO_QUIT="1"; & "<release>\dsh-desktop.exe"`（产物 exe 是 crate 名 `dsh-desktop.exe`，不存在「小南梁.exe」；安装产物在 `$env:LOCALAPPDATA\小南梁\dsh-desktop.exe`）
+- mac：`env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" DSH_DESKTOP_PORT=3082 DSH_DESKTOP_AUTO_QUIT=1 "<bundle>/小南梁.app/Contents/MacOS/dsh-desktop"`
+- win：`$env:PATH="$env:SystemRoot\system32;$env:SystemRoot"; $env:DSH_DESKTOP_PORT="3082"; $env:DSH_DESKTOP_AUTO_QUIT="1"; & "<release>\dsh-desktop.exe"`（产物 exe 是 crate 名 `dsh-desktop.exe`，不存在「小南梁.exe」；安装产物在 `$env:LOCALAPPDATA\小南梁\dsh-desktop.exe`）
 
 验收前确认没有同 identifier 旧实例在跑（单实例锁会拦截新实例）。
 

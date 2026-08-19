@@ -1,7 +1,7 @@
 //! DeepSeek Harness 桌面壳核心逻辑。
 //!
 //! 职责：
-//! 1. 启动时探测桌面壳专用端口（默认 127.0.0.1:3081），空闲则 spawn 独立 `dsh web` 子进程（带禁 stock ui-layout 的 overlay）；
+//! 1. 启动时探测本地 dsh 服务（默认 127.0.0.1:3080，DSH_DESKTOP_PORT 可覆盖）：已监听则复用（降级接入、不带 advanced 标记），空闲则 spawn 带禁 stock ui-layout 的 overlay 的桌面壳实例；
 //! 2. 轮询服务就绪后把主窗口从 loading 页导航到 Web GUI；
 //! 3. 托盘常驻：关闭窗口仅隐藏，托盘菜单可显示/退出；
 //! 4. 应用退出时回收本次启动的子进程，复用已有实例时不动它。
@@ -32,7 +32,7 @@ fn app_port() -> u16 {
     std::env::var("DSH_DESKTOP_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3081)
+        .unwrap_or(3080)
 }
 
 /// 等待服务就绪的超时时间。

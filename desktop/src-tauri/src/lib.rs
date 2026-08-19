@@ -1,9 +1,9 @@
 //! DeepSeek Harness 桌面壳核心逻辑。
 //!
 //! 职责：
-//! 1. 启动时探测桌面壳专用端口（默认 127.0.0.1:3081，`DSH_DESKTOP_PORT` 可覆盖），
-//!    空闲则 spawn 独立 `dsh web` 子进程（带禁 stock ui-layout 的 overlay）；
-//!    不再探测/复用浏览器/终端共享的 3080，避免两家实例互相干扰；
+//! 1. 启动时探测本地 dsh 服务（默认 127.0.0.1:3080，`DSH_DESKTOP_PORT` 可覆盖）：
+//!    已监听则复用现有实例并「降级接入」（不带 advanced 标记，避免 layout 服务冲突）；
+//!    空闲则由本应用 spawn 一个带禁 stock ui-layout 的 `--patch` overlay 的实例并启用桌面 chrome；
 //! 2. 轮询服务就绪后把主窗口从 loading 页导航到 Web GUI；
 //! 3. 托盘常驻：关闭窗口仅隐藏，托盘菜单可显示/退出；
 //! 4. 应用退出时回收本次启动的子进程，复用已有实例时不动它。
@@ -29,15 +29,16 @@ use tauri::{
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_notification::NotificationExt;
 
-/// 桌面壳专用的 dsh 服务端口（默认 3081，`DSH_DESKTOP_PORT` 可覆盖）。
-/// 与浏览器/终端共享的 3080 完全分离：桌面实例始终由本应用 spawn 并携带
-/// `--patch` overlay（禁 stock ui-layout），因此桌面 chrome（layout/root slot 接管）
-/// 不会与外部实例的 stock 布局冲突；覆盖仅用于端口占用冲突或调试。
+/// dsh 服务端口（默认 3080，与浏览器/终端共用；`DSH_DESKTOP_PORT` 可覆盖）。
+/// 策略：端口已有 dsh web → 复用并降级接入（不带 advanced 标记）；空闲 → 由本应用
+/// spawn 一个携带禁 stock ui-layout 的 `--patch` overlay 的实例并启用桌面 chrome。
+/// 注意：同一 profile 只允许一个 dsh web 实例并发（task-board 等插件持有排它锁），
+/// 因此不要用独立端口再起第二实例。
 fn app_port() -> u16 {
     std::env::var("DSH_DESKTOP_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3081)
+        .unwrap_or(3080)
 }
 
 /// 等待服务就绪的超时时间。
@@ -178,6 +179,82 @@ fn port_open(port: u16) -> bool {
         Duration::from_millis(300),
     )
     .is_ok()
+}
+
+/// 返回当前监听 `port` 的进程 PID 列表（跨平台）。
+/// 说明：端口「是否在监听」的探测（port_open）是纯 TcpStream 代码，不依赖命令行；
+/// 但「由监听的端口反查 PID」在纯 std 里没有跨平台 API，这里按平台调用系统自带工具：
+/// macOS/Linux 用 lsof（Linux 缺 lsof 时回退 ss），Windows 用 netstat -ano。
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn listener_pids(port: u16) -> Vec<u32> {
+    let port_tag = format!("{port}");
+    let out = std::process::Command::new("lsof")
+        .arg("-t")
+        .arg("-iTCP:")
+        .arg(&port_tag)
+        .arg("-sTCP:LISTEN")
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let ids: Vec<u32> = String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|l| l.trim().parse::<u32>().ok())
+                .collect();
+            if !ids.is_empty() {
+                return ids;
+            }
+        }
+        _ => {}
+    }
+    // Linux 缺 lsof 时回退 ss -ltnpH 'sport = :PORT'
+    #[cfg(target_os = "linux")]
+    {
+        let mut ids = Vec::new();
+        if let Ok(o) = std::process::Command::new("ss")
+            .args(["-ltnpH", &format!("sport = :{port}")])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                if let Some(pos) = line.rfind("pid=") {
+                    let tail = &line[pos + 4..];
+                    let pid: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if let Ok(pid) = pid.parse::<u32>() {
+                        ids.push(pid);
+                    }
+                }
+            }
+        }
+        return ids;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn listener_pids(port: u16) -> Vec<u32> {
+    let port_tag = format!(":{port}");
+    let out = std::process::Command::new("netstat").arg("-ano").output();
+    let Ok(o) = out else { return Vec::new() };
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter(|l| l.contains(&port_tag) && l.to_ascii_lowercase().contains("listening"))
+        .filter_map(|l| l.split_whitespace().last()?.parse::<u32>().ok())
+        .collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_process(pid: u32) {
+    // SIGTERM，dsh web 会优雅退出；端口未被释放时由调用方在超时后中止重启
+    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+}
+
+#[cfg(target_os = "windows")]
+fn kill_process(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .status();
 }
 
 /// 构造 spawn dsh 时的运行时 PATH。
@@ -850,10 +927,15 @@ fn desktop_overlay_path(app: &tauri::AppHandle) -> PathBuf {
     path
 }
 
-/// 桌面壳加载 Web GUI 的地址：附加 desktop 标记，让 dsh-desktop-app 插件的
-/// client 端（advanced shell）识别「当前在桌面壳里」，从而接管 root slot 渲染
-/// 标题栏/拖拽区。普通浏览器/无标记访问不激活任何桌面 UI。
-fn desktop_url(port: u16) -> String {
+/// 桌面壳加载 Web GUI 的地址。
+/// `advanced=true`（本次由桌面壳 spawn 了带 overlay 的实例）：附加 desktop 标记，
+/// 插件 client 借此接管 root slot 渲染标题栏/拖拽区；
+/// `advanced=false`（复用了外部已有实例）：不带标记，按标准布局「降级接入」，
+/// 避免与 stock ui-layout 的 layout 服务冲突。普通浏览器/无标记访问不激活桌面 UI。
+fn desktop_url(port: u16, advanced: bool) -> String {
+    if !advanced {
+        return format!("http://127.0.0.1:{port}/");
+    }
     let platform = if cfg!(target_os = "macos") {
         "darwin"
     } else if cfg!(target_os = "windows") {
@@ -870,7 +952,8 @@ fn desktop_url(port: u16) -> String {
 /// `nport`/`ntoken` 是通知桥的端口与令牌，导航完成后才注入监听脚本。
 async fn wait_ready_and_navigate(app: AppHandle, port: u16, nport: u16, ntoken: String) {
     let state = app.state::<DshState>();
-    let url = desktop_url(port);
+    // advanced 以本次是否由桌面壳 spawn 为准（复用的外部实例不带标记、降级接入）
+    let url = desktop_url(port, state.spawned_this_run.load(Ordering::SeqCst));
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         if state.spawn_failed.load(Ordering::SeqCst) {
@@ -1236,18 +1319,14 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 重启 dsh web 服务（不退出桌面端）：仅当本次启动 spawn 过 dsh 子进程时生效。
+/// 重启 dsh web 服务（不退出桌面端）：升级为「桌面壳实例」。
 ///
-/// 复用当前会话中已有 dsh 的场景（`spawned_this_run=false`）直接退出，
-/// 让用户从浏览器/终端手动重启，避免桌面端误杀其他进程。
+/// 无论当前占用端口的 dsh 是否由本应用 spawn，都会先停掉它（复用外部实例时按端口
+/// 查找其 PID 并 kill，跨平台），再以带桌面 overlay 的新实例重新拉起，从而从
+/// 「降级接入」（复用外部实例、无桌面 chrome）升级为完整桌面 chrome。
 /// 通知服务器在 setup 阶段就已启动并常驻，重启时复用同一端口/token。
 fn restart_dsh(app: &AppHandle) {
     let state = app.state::<DshState>();
-    if !state.spawned_this_run.load(Ordering::SeqCst) {
-        log::warn!("本次启动未 spawn dsh（复用了已有实例），重启操作跳过");
-        show_notification(app, "Deepseek Harness", "复用了已有的 dsh 服务，请从原实例手动重启。");
-        return;
-    }
     if state.restarting.swap(true, Ordering::SeqCst) {
         log::warn!("已在重启中，忽略重复触发");
         return;
@@ -1255,28 +1334,47 @@ fn restart_dsh(app: &AppHandle) {
     log::info!("[restart] 托盘触发重启 dsh 服务");
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        // 1) 杀掉现有 dsh 子进程
         let port = app_port();
+        // 1) 停掉占用端口的现有 dsh：优先我们的子进程；否则按端口找外部进程 kill
         if let Some(mut child) = handle.state::<DshState>().child.lock().unwrap().take() {
             let pid = child.id();
-            log::info!("[restart] 停止旧 dsh 子进程（PID {pid}）");
+            log::info!("[restart] 停止自管 dsh 子进程（PID {pid}）");
             let _ = child.kill();
             let _ = child.wait();
             log::info!("[restart] 旧 dsh 已退出");
+        } else {
+            let pids = listener_pids(port);
+            if pids.is_empty() {
+                log::warn!("[restart] 端口 {port} 没有找到可停止的 dsh 进程");
+            } else {
+                log::info!("[restart] 停止占用 {port} 的外部 dsh 进程：{pids:?}");
+                for pid in pids {
+                    kill_process(pid);
+                }
+            }
         }
         // 2) 等端口释放（kill 后 SO_REUSEADDR 偶发未及时释放）
-        for _ in 0..30 {
+        let mut freed = false;
+        for _ in 0..40 {
             if !port_open(port) {
+                freed = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        // 3) 启动新 dsh
+        if !freed {
+            log::error!("[restart] 端口 {port} 在 4s 内未释放，重启中止");
+            show_notification(&handle, "Deepseek Harness · 重启失败", &format!("端口 {port} 仍被占用"));
+            handle.state::<DshState>().restarting.store(false, Ordering::SeqCst);
+            return;
+        }
+        // 3) 以带桌面 overlay 的实例重新拉起
         match spawn_dsh(&handle, port) {
             Ok(child) => {
                 let new_pid = child.id();
                 log::info!("[restart] 新 dsh 子进程已启动（PID {new_pid}）");
                 *handle.state::<DshState>().child.lock().unwrap() = Some(child);
+                handle.state::<DshState>().spawned_this_run.store(true, Ordering::SeqCst);
             }
             Err(e) => {
                 let msg = match &e {
@@ -1288,7 +1386,7 @@ fn restart_dsh(app: &AppHandle) {
                 return;
             }
         }
-        // 4) 重置失败标志并等待就绪 + 重新导航主窗口
+        // 4) 重置失败标志并等待就绪 + 重新导航（此时 advanced=true，桌面 chrome 生效）
         handle.state::<DshState>().spawn_failed.store(false, Ordering::SeqCst);
         let nport = handle.state::<DshState>().notify_port.load(Ordering::SeqCst);
         let ntoken = handle.state::<DshState>().notify_token.lock().unwrap().clone();
@@ -1393,10 +1491,15 @@ pub fn run() {
             // macOS 用 titleBarStyle:Overlay（保留原生红绿灯）；
             // Windows/Linux 隐藏原生标题栏（decorations:false），标题栏 UI 由
             // 插件 client 自绘 caption 行 + 窗口按钮。
+            // Windows/Linux：仅当本次由桌面壳 spawn 了带 overlay 的实例（启用桌面
+            // chrome）才隐藏原生标题栏；复用外部实例时保留原生标题栏（降级接入，
+            // 窗口仍可拖动/关闭）。
             #[cfg(not(target_os = "macos"))]
-            if let Some(w) = app.get_webview_window("main") {
-                if let Err(e) = w.set_decorations(false) {
-                    log::warn!("关闭主窗口原生标题栏失败：{e}");
+            if state.spawned_this_run.load(Ordering::SeqCst) {
+                if let Some(w) = app.get_webview_window("main") {
+                    if let Err(e) = w.set_decorations(false) {
+                        log::warn!("关闭主窗口原生标题栏失败：{e}");
+                    }
                 }
             }
             // 测试钩子：DSH_DESKTOP_AUTO_QUIT=1 时延迟自动退出（模拟托盘退出，验证子进程回收）
