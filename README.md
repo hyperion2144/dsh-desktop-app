@@ -23,21 +23,32 @@
 
 ## 特性
 
-- **一键启动**：双击 app → 自动探测/拉起 `dsh web`（127.0.0.1:3080）→ 就绪后
-  自动导航；已有服务则直接复用，退出时绝不误杀
+- **一键启动**：双击 app → 在桌面壳专用端口（默认 3081，`DSH_DESKTOP_PORT` 覆盖）
+  拉起独立的 `dsh web`（带禁 stock ui-layout 的 overlay）→ 就绪后自动导航；
+  与浏览器/终端共用的 3080 互不干扰，退出只回收自己拉起的实例
 - **托盘常驻**：关闭窗口仅隐藏（首次有通知提示），托盘左键唤起、菜单退出；
   拦截 Cmd+Q 防误退
 - **进程回收**：只回收本次启动 spawn 的 dsh 子进程，stdout/stderr 落盘日志
 - **单实例**：重复双击聚焦已有窗口，不会拉起第二个服务
 - **窗口状态记忆**：位置与大小自动恢复
 - **桌面 chrome（插件式，参考 dsh-plugin-desktop 实现）**：由内置 `dsh-desktop-app` 插件 client（`src/client/`，构建产物 `lib/client.js`）接管 dsh web 的 root slot，按平台渲染——macOS `titleBarStyle: Overlay` 保留原生红绿灯 + sidebar 顶部空白拖拽区（`data-tauri-drag-region` 原生拖拽，`core:window` 权限经 remote capability 放行）；Windows/Linux 用 `decorations:false` 隐藏系统标题栏，client 自绘 caption 行 + 最小化/最大化/关闭按钮；布局/配色全部跟随主题 token（`--dsw-alias-bg-base` 等），无硬编码、可换主题；macOS Overlay 顶部原生标题栏材质属系统标准行为
-- **自动接线 web profile**：应用启动（需拉起 dsh 时）检测 `~/.dsh/profiles/web` 是否已挂 `dsh-desktop-app`，缺失则用官方 `dsh plugin --profile web add <spec>` 装入（幂等，代码内完成、不手工改配置）；spawn 时带内置 overlay `--patch` 禁用 stock `ui-layout`，让桌面 root slot 接管布局，浏览器 GUI 不受影响
+- **自动接线 web profile**：应用启动（需拉起 dsh 时）检测 `~/.dsh/profiles/web` 是否已挂 `dsh-desktop-app`，缺失则用官方 `dsh plugin --profile web add <spec>` 装入（幂等，代码内完成、不手工改配置）；`<spec>` 指向**内嵌在 app 内的插件副本**（见下条「内嵌插件跨平台路径」）；spawn 时带内置 overlay `--patch` 禁用 stock `ui-layout`，让桌面 root slot 接管布局，浏览器 GUI 不受影响
+- **内嵌插件跨平台路径**：`dsh-desktop-app` 打包时经 `bundle.resources` 内嵌进安装包——
+  macOS 落在 `Contents/Resources/dsh-desktop-app`、Windows 落在可执行文件所在安装目录、
+  Linux 落在 `/usr/lib/<应用>`（deb）或 AppImage 挂载点；运行时统一用 `app.path().resource_dir()`
+  解析真实位置，安装目录不在 /Applications 也不受影响。
 - **鲸鱼娘桌宠**：透明置顶无边框小窗，纯 CSS 呼吸/漂浮动画 + 椭圆阴影；拖拽移动
   （4px 阈值区分点击）、左键唤起主窗、右键菜单（穿透开关/隐藏/退出）、任务完成
   弹气泡；位置记忆（多屏钳位 + 拖拽防抖）；托盘「显示/隐藏桌宠」开关
 - **任务完成通知**：注入 JS 监听运行中标记（`data-state="ongoing"`）的"忙碌→空闲"
   翻转，任务结束时 Dock 角标 +1；窗口失焦/隐藏时弹系统通知并跳 Dock（前台不打扰），
   回到窗口自动清零；通知桥内置 CORS 预检应答（跨源 fetch 不再被浏览器拦截）
+- **三平台通知权限**：启动时 best-effort 申请/确认系统通知权限（macOS UNUserNotificationCenter /
+  Windows Toast / Linux dbus），所有系统通知的发送结果统一落日志，便于排查"通知不生效"
+- **外链默认浏览器打开**：webview 里点击 http(s)/mailto/tel 外链，由插件 client 拦截并
+  转交系统默认浏览器（Tauri 命令 `open_external`），不再"点了没反应"
+- **启动控制台**：加载页实时显示 `dsh web` 子进程的 stdout/stderr（原生侧 emit
+  `dsh-console` 事件到页面），控制台样式输出框支持展开/收起/清空，启动失败时可直接看到原因
 - **健壮定位**：Finder/资源管理器启动的 GUI 应用没有终端 PATH，内置
   nvm/npm-global/npx/Homebrew/非标准盘符等多级兜底探测（Windows 分支用
   `node + bin.js` 直跑，规避 dsh.cmd shim 与黑窗闪现）

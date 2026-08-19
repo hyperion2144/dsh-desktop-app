@@ -1,6 +1,7 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import { applyAdvancedShell } from './advanced-shell.ts'
+import { installExternalLinkHandler } from './external-links.ts'
 import { parseDesktopClientEnvironment } from './environment.ts'
 
 export { applyAdvancedShell } from './advanced-shell.ts'
@@ -24,5 +25,8 @@ export const inject = [
 export function apply(ctx: ClientContext): void {
   const environment = parseDesktopClientEnvironment(window.location.search)
   if (!environment) return
+  // 桌面壳 webview：外链统一转交系统默认浏览器打开（WKWebView/WebView2
+  // 对 target=_blank 或外部域链接默认无反应）。
+  installExternalLinkHandler()
   if (environment.mode === 'advanced') applyAdvancedShell(ctx, environment)
 }

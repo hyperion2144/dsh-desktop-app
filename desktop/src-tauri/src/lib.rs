@@ -1,7 +1,9 @@
 //! DeepSeek Harness 桌面壳核心逻辑。
 //!
 //! 职责：
-//! 1. 启动时探测本地 dsh 服务（默认 127.0.0.1:3080），空闲则 spawn `dsh web` 子进程；
+//! 1. 启动时探测桌面壳专用端口（默认 127.0.0.1:3081，`DSH_DESKTOP_PORT` 可覆盖），
+//!    空闲则 spawn 独立 `dsh web` 子进程（带禁 stock ui-layout 的 overlay）；
+//!    不再探测/复用浏览器/终端共享的 3080，避免两家实例互相干扰；
 //! 2. 轮询服务就绪后把主窗口从 loading 页导航到 Web GUI；
 //! 3. 托盘常驻：关闭窗口仅隐藏，托盘菜单可显示/退出；
 //! 4. 应用退出时回收本次启动的子进程，复用已有实例时不动它。
@@ -27,12 +29,15 @@ use tauri::{
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_notification::NotificationExt;
 
-/// 桌面壳与 dsh 服务的约定端口（可用 `DSH_DESKTOP_PORT` 覆盖，调试用）。
+/// 桌面壳专用的 dsh 服务端口（默认 3081，`DSH_DESKTOP_PORT` 可覆盖）。
+/// 与浏览器/终端共享的 3080 完全分离：桌面实例始终由本应用 spawn 并携带
+/// `--patch` overlay（禁 stock ui-layout），因此桌面 chrome（layout/root slot 接管）
+/// 不会与外部实例的 stock 布局冲突；覆盖仅用于端口占用冲突或调试。
 fn app_port() -> u16 {
     std::env::var("DSH_DESKTOP_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3080)
+        .unwrap_or(3081)
 }
 
 /// 等待服务就绪的超时时间。
@@ -211,9 +216,10 @@ fn dsh_runtime_path(bin: &std::path::Path) -> std::ffi::OsString {
     std::env::join_paths(paths).unwrap_or_else(|_| std::ffi::OsString::from("/usr/bin:/bin"))
 }
 
-/// spawn `dsh web --host 127.0.0.1 --port <port>`，stdout/stderr 转发到日志。
+/// spawn `dsh web --host 127.0.0.1 --port <port>`；stdout/stderr 转发到日志，
+/// 并实时 emit 到启动加载页的「本地服务输出」控制台（`dsh-console` 事件）。
 #[cfg(unix)]
-fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
+fn spawn_dsh(app: &tauri::AppHandle, port: u16) -> Result<Child, SpawnError> {
     let bin = find_dsh_bin().ok_or_else(|| {
         SpawnError::NotFound(
             "未找到 dsh 命令。请执行 `npm i -g @deepseek-ai/dsh` 或设置 DSH_BIN 环境变量。"
@@ -251,16 +257,22 @@ fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
         .map_err(|e| SpawnError::Other(format!("spawn {} 失败：{e}", bin.display())))?;
     log::info!("已启动 dsh web（{}，PID {}）", bin.display(), child.id());
     if let Some(out) = child.stdout.take() {
+        let app = app.clone();
         thread::spawn(move || {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
                 log::info!("[dsh] {line}");
+                let _ = app
+                    .emit("dsh-console", serde_json::json!({ "stream": "stdout", "line": line }));
             }
         });
     }
     if let Some(err) = child.stderr.take() {
+        let app = app.clone();
         thread::spawn(move || {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
                 log::warn!("[dsh] {line}");
+                let _ = app
+                    .emit("dsh-console", serde_json::json!({ "stream": "stderr", "line": line }));
             }
         });
     }
@@ -387,7 +399,7 @@ fn find_dsh_bin_js() -> Option<PathBuf> {
 /// npm 全局安装的 dsh 在 Windows 是 dsh.cmd shim，直接 CreateProcess 有引号
 /// 转义坑，所以直接用 node.exe 执行 bin.js；CREATE_NO_WINDOW 防止闪黑窗。
 #[cfg(windows)]
-fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
+fn spawn_dsh(app: &tauri::AppHandle, port: u16) -> Result<Child, SpawnError> {
     use std::os::windows::process::CommandExt;
     let node = find_node().ok_or_else(|| {
         SpawnError::NotFound(
@@ -433,16 +445,22 @@ fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
         child.id()
     );
     if let Some(out) = child.stdout.take() {
+        let app = app.clone();
         thread::spawn(move || {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
                 log::info!("[dsh] {line}");
+                let _ = app
+                    .emit("dsh-console", serde_json::json!({ "stream": "stdout", "line": line }));
             }
         });
     }
     if let Some(err) = child.stderr.take() {
+        let app = app.clone();
         thread::spawn(move || {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
                 log::warn!("[dsh] {line}");
+                let _ = app
+                    .emit("dsh-console", serde_json::json!({ "stream": "stderr", "line": line }));
             }
         });
     }
@@ -495,7 +513,7 @@ fn start_notify_server(app: AppHandle) -> (u16, String) {
     (port, token)
 }
 
-/// CORS 响应头：注入脚本从 `127.0.0.1:3080` 跨源 fetch 到本桥（随机端口），
+/// CORS 响应头：注入脚本从 `127.0.0.1:<服务端口>` 跨源 fetch 到本桥（随机端口），
 /// `Content-Type: application/json` + `Authorization` 头会触发浏览器 preflight；
 /// 不回 OPTIONS 与 `Access-Control-Allow-*` 头，浏览器会直接拦截实际请求
 /// （0.3.0 任务通知"收不到"的根因之一）。
@@ -583,12 +601,7 @@ fn notify_completed(app: &AppHandle, body: &str) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_badge_count(Some(unread as i64));
         if distracted {
-            let _ = app
-                .notification()
-                .builder()
-                .title("Deepseek Harness · 任务完成")
-                .body(body)
-                .show();
+            show_notification(app, "Deepseek Harness · 任务完成", body);
             let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
         }
     }
@@ -660,6 +673,34 @@ fn inject_task_notifier(app: AppHandle, port: u16, token: &str) {
     });
 }
 
+/// 确认/申请系统通知权限（三平台通用）。
+/// tauri-plugin-notification 桌面端 `request_permission`/`permission_state` 返回
+/// `PermissionState`：macOS 走 UNUserNotificationCenter、Windows 走 Toast（AUMID）、
+/// Linux 走 dbus 通知。放任何 `.show()` 之前 best-effort 调用并记录结果，便于排查
+/// “通知不生效”（显示权限被拒 / 平台不支持 / 请求失败等）。
+fn request_notification_permission(app: &tauri::AppHandle) {
+    use tauri::plugin::PermissionState;
+    match app.notification().permission_state() {
+        Ok(PermissionState::Granted) => log::info!("通知权限：已授予"),
+        Ok(PermissionState::Prompt | PermissionState::PromptWithRationale) => {
+            match app.notification().request_permission() {
+                Ok(_) => log::info!("通知权限：未决定，已发起请求"),
+                Err(e) => log::warn!("申请通知权限失败：{e}"),
+            }
+        }
+        Ok(PermissionState::Denied) => log::warn!("通知权限：被拒绝，任务完成通知将不可见"),
+        Err(e) => log::warn!("查询通知权限失败：{e}"),
+    }
+}
+
+/// 发一条系统通知并记录发送失败（用于排查“通知不生效”）。
+/// `.show()` 返回的错在插件内部被吞掉，这里统一落日志。
+fn show_notification(app: &tauri::AppHandle, title: &str, body: &str) {
+    match app.notification().builder().title(title).body(body).show() {
+        Ok(()) => log::info!("系统通知已发送：{title}"),
+        Err(e) => log::warn!("系统通知发送失败（{title}）：{e}"),
+    }
+}
 /// dsh 数据目录（$DSH_HOME 或 ~/.dsh）。
 fn dsh_home() -> PathBuf {
     if let Ok(h) = std::env::var("DSH_HOME") {
@@ -675,13 +716,27 @@ fn dsh_home() -> PathBuf {
 }
 
 /// 定位本应用自带的桌面 chrome 插件包（dsh-desktop-app）。
-/// 优先级：DSH_DESKTOP_PLUGIN 环境变量（目录）> 与可执行文件同级的 dsh-desktop-app（打包）>
-/// 从可执行文件向上找 package.json.name == dsh-desktop-app 的目录（开发仓库根）。
-fn desktop_plugin_dir() -> Option<PathBuf> {
+/// 优先级：
+/// 1. `DSH_DESKTOP_PLUGIN` 环境变量（目录）
+/// 2. Tauri 运行时资源目录下的内嵌副本 `{resource_dir}/dsh-desktop-app` —— 打包场景，
+///    由 tauri.conf.json 的 `bundle.resources` 内嵌；`resource_dir()` 按平台解析真实位置
+///    （macOS=Contents/Resources、Windows=可执行文件所在目录、Linux=/usr/lib 或 AppImage
+///    挂载点），因此无论 app 装到哪里都能拿到真实路径，无需写死。
+/// 3. 与可执行文件同级的 dsh-desktop-app（老打包布局兼容）
+/// 4. 从可执行文件向上找 package.json.name == dsh-desktop-app 的目录（开发仓库根）。
+fn desktop_plugin_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("DSH_DESKTOP_PLUGIN") {
         let p = PathBuf::from(p);
         if p.join("package.json").exists() {
             return Some(p);
+        }
+    }
+    // 打包内嵌副本：resource_dir 已按平台归一为真实资源目录
+    if let Ok(res_dir) = app.path().resource_dir() {
+        let embedded = res_dir.join("dsh-desktop-app");
+        if embedded.join("package.json").exists() {
+            log::info!("使用内嵌插件包：{}", embedded.display());
+            return Some(embedded);
         }
     }
     let exe = std::env::current_exe().ok()?;
@@ -708,8 +763,8 @@ fn desktop_plugin_dir() -> Option<PathBuf> {
 
 /// 生成安装到 web profile 的插件 spec：开发（cargo target 内）用 link: 实时链接，
 /// 打包用 file:（内嵌副本）。
-fn desktop_plugin_spec() -> Option<String> {
-    let dir = desktop_plugin_dir()?;
+fn desktop_plugin_spec(app: &tauri::AppHandle) -> Option<String> {
+    let dir = desktop_plugin_dir(app)?;
     let abs = dir.canonicalize().ok()?;
     let dev = abs.to_string_lossy().contains("/target/");
     Some(if dev {
@@ -748,8 +803,8 @@ fn run_dsh_plugin_add(spec: &str) -> Option<std::process::ExitStatus> {
 /// 确保 web profile 已挂载桌面 chrome 插件（dsh-desktop-app）。
 /// 检测缺失时通过官方 `dsh plugin --profile web add <spec>` 安装（代码内完成，
 /// 不手工改任何 profile 配置）；幂等：bundles 已含且 node_modules 存在则跳过。
-fn ensure_web_profile_plugin() {
-    let Some(spec) = desktop_plugin_spec() else {
+fn ensure_web_profile_plugin(app: &tauri::AppHandle) {
+    let Some(spec) = desktop_plugin_spec(app) else {
         log::warn!("未定位到 dsh-desktop-app 插件包，跳过 web profile 接线");
         return;
     };
@@ -858,12 +913,7 @@ fn show_error(app: &AppHandle, reason: &str) {
         "timeout" => "等待本地服务就绪超时，详见日志。",
         _ => "未知错误，详见日志。",
     };
-    let _ = app
-        .notification()
-        .builder()
-        .title("Deepseek Harness 启动失败")
-        .body(body)
-        .show();
+    show_notification(app, "Deepseek Harness 启动失败", body);
 }
 
 /// 显示并聚焦主窗口。
@@ -1083,6 +1133,60 @@ fn toggle_zoom(window: tauri::WebviewWindow, state: tauri::State<DshState>) {
     }
 }
 
+/// 在系统默认浏览器/应用中打开外链（三平台：macOS `open`、Windows `cmd start`、
+/// Linux `xdg-open`）。仅允许 http/https/mailto/tel，避免命令注入。
+/// 由 dsh-desktop-app 插件 client 在 webview 里拦截外链点击后调用。
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    if !(url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("mailto:")
+        || url.starts_with("tel:"))
+    {
+        return Err(format!("不允许打开的链接协议：{url}"));
+    }
+    let ok = open_external_impl(&url);
+    if ok {
+        log::info!("已在系统默认应用中打开：{url}");
+        Ok(())
+    } else {
+        Err(format!("打开链接失败：{url}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_external_impl(url: &str) -> bool {
+    std::process::Command::new("open")
+        .arg(url)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn open_external_impl(url: &str) -> bool {
+    use std::os::windows::process::CommandExt;
+    // cmd 里 URL 的 `&` 会被当作命令分隔符，必须整体加引号（内层双引号转单引号）
+    let quoted = format!("\"{}\x22", url.replace('"', "'"));
+    std::process::Command::new("cmd")
+        .arg("/C")
+        .arg("start")
+        .arg("")
+        .arg(&quoted)
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn open_external_impl(url: &str) -> bool {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
 /// 构建菜单栏托盘：左键显示窗口，菜单提供显示/隐藏桌宠/退出。
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
@@ -1141,12 +1245,7 @@ fn restart_dsh(app: &AppHandle) {
     let state = app.state::<DshState>();
     if !state.spawned_this_run.load(Ordering::SeqCst) {
         log::warn!("本次启动未 spawn dsh（复用了已有实例），重启操作跳过");
-        let _ = app
-            .notification()
-            .builder()
-            .title("Deepseek Harness")
-            .body("复用了已有的 dsh 服务，请从原实例手动重启。")
-            .show();
+        show_notification(app, "Deepseek Harness", "复用了已有的 dsh 服务，请从原实例手动重启。");
         return;
     }
     if state.restarting.swap(true, Ordering::SeqCst) {
@@ -1173,7 +1272,7 @@ fn restart_dsh(app: &AppHandle) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         // 3) 启动新 dsh
-        match spawn_dsh(port) {
+        match spawn_dsh(&handle, port) {
             Ok(child) => {
                 let new_pid = child.id();
                 log::info!("[restart] 新 dsh 子进程已启动（PID {new_pid}）");
@@ -1184,12 +1283,7 @@ fn restart_dsh(app: &AppHandle) {
                     SpawnError::NotFound(s) | SpawnError::Other(s) => s.clone(),
                 };
                 log::error!("[restart] spawn 失败：{msg}");
-                let _ = handle
-                    .notification()
-                    .builder()
-                    .title("Deepseek Harness · 重启失败")
-                    .body(&format!("spawn 失败：{msg}"))
-                    .show();
+                show_notification(&handle, "Deepseek Harness · 重启失败", &format!("spawn 失败：{msg}"));
                 handle.state::<DshState>().restarting.store(false, Ordering::SeqCst);
                 return;
             }
@@ -1232,7 +1326,8 @@ pub fn run() {
             pet_hide,
             pet_quit,
             pet_toggle_passthrough,
-            toggle_zoom
+            toggle_zoom,
+            open_external
         ])
 .manage(DshState {
             child: Mutex::new(None),
@@ -1252,13 +1347,19 @@ pub fn run() {
             let _ = DESKTOP_OVERLAY.set(desktop_overlay_path(app.handle()));
             let port = app_port();
             let state = app.state::<DshState>();
+            // 申请系统通知权限（macOS 弹授权窗；Windows/Linux 幂等确认）。
+            // 放在任何 .show() 之前，best-effort 不阻塞启动。
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                request_notification_permission(&handle);
+            });
             if port_open(port) {
                 log::info!("127.0.0.1:{port} 已有服务在监听，直接复用现有实例");
             } else {
                 // 即将由本应用拉起 dsh：先确保 web profile 已挂载桌面 chrome 插件
                 //（参考项目机制：检测缺失则用官方 `dsh plugin --profile web add` 装上）。
-                ensure_web_profile_plugin();
-                match spawn_dsh(port) {
+                ensure_web_profile_plugin(app.handle());
+                match spawn_dsh(app.handle(), port) {
                     Ok(child) => {
                         log::info!("dsh 子进程已启动（PID {}）", child.id());
                         *state.child.lock().unwrap() = Some(child);
@@ -1367,13 +1468,11 @@ pub fn run() {
                         api.prevent_close();
                         let _ = window.hide();
                         if !state.tray_tip_shown.swap(true, Ordering::SeqCst) {
-                            let _ = window
-                                .app_handle()
-                                .notification()
-                                .builder()
-                                .title("Deepseek Harness 仍在运行")
-                                .body("窗口已隐藏到菜单栏托盘，点击托盘图标可重新打开；托盘菜单可退出。")
-                                .show();
+                            show_notification(
+                                window.app_handle(),
+                                "Deepseek Harness 仍在运行",
+                                "窗口已隐藏到菜单栏托盘，点击托盘图标可重新打开；托盘菜单可退出。",
+                            );
                         }
                     } else if let WindowEvent::Focused(true) = event {
                         // 用户回到窗口：清零角标与未读数

@@ -1,8 +1,8 @@
 # Deepseek Harness · Windows 验收脚本（三条路径，源自实测验收清单）
-# 用法：.\scripts\acceptance.ps1 [-Bin target\debug\dsh-desktop.exe] [-Port 3080]
+# 用法：.\scripts\acceptance.ps1 [-Bin target\debug\dsh-desktop.exe] [-Port 3081]（桌面壳专用端口）
 param(
     [string]$Bin = "target\debug\dsh-desktop.exe",
-    [int]$Port = 3080
+    [int]$Port = 3081
 )
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")

@@ -10,10 +10,68 @@
     <main class="boot">
       <img class="logo-img" src="icon.png" alt="Deepseek Harness" />
       <h1>Deepseek Harness</h1>
-      <p class="status">正在启动本地服务…</p>
+      <p class="status" id="status">正在启动本地服务…</p>
       <div class="dots" aria-label="加载中">
         <span></span><span></span><span></span>
       </div>
+
+      <section class="console" id="console-box">
+        <header class="console-head">
+          <span class="console-title">本地服务输出</span>
+          <div class="console-actions">
+            <span class="console-state" id="console-state">○ 等待 dsh 输出</span>
+            <button id="console-clear" type="button">清空</button>
+            <button id="console-toggle" type="button" aria-expanded="true">收起</button>
+          </div>
+        </header>
+        <pre id="console" class="console-body" aria-live="polite"></pre>
+        <footer class="console-foot">启动完成将自动进入主界面</footer>
+      </section>
     </main>
+    <script>
+      "use strict";
+      // 启动阶段实时显示 dsh web 子进程输出（原生侧 emit dsh-console 事件）
+      var MAX_LINES = 500;
+      var box = document.getElementById("console-box");
+      var el = document.getElementById("console");
+      var stateEl = document.getElementById("console-state");
+      var toggleBtn = document.getElementById("console-toggle");
+      var clearBtn = document.getElementById("console-clear");
+
+      function append(stream, line) {
+        if (!line) return;
+        var row = document.createElement("div");
+        row.className = "line " + (stream === "stderr" ? "err" : "ok");
+        var t = new Date().toTimeString().slice(0, 8);
+        row.textContent = "[" + t + "] " + line;
+        el.appendChild(row);
+        while (el.childElementCount > MAX_LINES) el.removeChild(el.firstChild);
+        el.scrollTop = el.scrollHeight;
+        stateEl.textContent = "● 正在接收输出…";
+      }
+
+      var tauri = window.__TAURI__;
+      if (tauri && tauri.event && typeof tauri.event.listen === "function") {
+        tauri.event
+          .listen("dsh-console", function (e) {
+            var d = e.payload || {};
+            append(d.stream, d.line);
+          })
+          .then(function () {
+            stateEl.textContent = "● 已连接";
+          });
+      } else {
+        stateEl.textContent = "○ 无法连接原生事件";
+      }
+
+      toggleBtn.addEventListener("click", function () {
+        var collapsed = box.classList.toggle("collapsed");
+        toggleBtn.textContent = collapsed ? "展开" : "收起";
+        toggleBtn.setAttribute("aria-expanded", String(!collapsed));
+      });
+      clearBtn.addEventListener("click", function () {
+        el.textContent = "";
+      });
+    </script>
   </body>
 </html>
