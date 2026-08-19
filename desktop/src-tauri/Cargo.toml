@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desktop"
-version = "0.4.0"
+version = "0.4.1"
 description = "Deepseek Harness —— DeepSeek Harness desktop client (auto-spawn local dsh web service, system tray resident)"
 authors = ["ArcReel"]
 edition = "2021"

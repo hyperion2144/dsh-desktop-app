@@ -221,7 +221,28 @@ fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
         )
     })?;
     let mut cmd = Command::new(&bin);
-    cmd.args(["web", "--host", "127.0.0.1", "--port", &port.to_string()])
+    // 统一用 `dsh --profile web ...`（等价于 `dsh web`）以便带 launcher 级
+    // `--patch` overlay。桌面壳启动总是带内置 overlay（禁 stock ui-layout，
+    // 让我们插件的 root slot + layout 服务接管桌面布局，等价参考项目 advanced
+    // 组合），并可选叠加 DSH_DESKTOP_EXTRA_PATCH 调试 overlay（可重复 --patch）。
+    let mut launcher_args: Vec<std::ffi::OsString> = vec!["--profile".into(), "web".into()];
+    if let Some(overlay) = DESKTOP_OVERLAY.get() {
+        launcher_args.push("--patch".into());
+        launcher_args.push(overlay.clone().into_os_string());
+    }
+    if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
+        if !patch.trim().is_empty() {
+            launcher_args.push("--patch".into());
+            launcher_args.push(patch.into());
+        }
+    }
+    launcher_args.extend([
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string().into(),
+    ]);
+    cmd.args(&launcher_args)
         .env("PATH", dsh_runtime_path(&bin))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -380,8 +401,25 @@ fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
         )
     })?;
     let mut cmd = Command::new(&node);
-    cmd.arg(&bin_js)
-        .args(["web", "--host", "127.0.0.1", "--port", &port.to_string()])
+    let mut launcher_args: Vec<std::ffi::OsString> =
+        vec![bin_js.clone().into(), "--profile".into(), "web".into()];
+    if let Some(overlay) = DESKTOP_OVERLAY.get() {
+        launcher_args.push("--patch".into());
+        launcher_args.push(overlay.clone().into_os_string());
+    }
+    if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
+        if !patch.trim().is_empty() {
+            launcher_args.push("--patch".into());
+            launcher_args.push(patch.into());
+        }
+    }
+    launcher_args.extend([
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string().into(),
+    ]);
+    cmd.args(&launcher_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
@@ -409,87 +447,6 @@ fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
         });
     }
     Ok(child)
-}
-
-/// 生成注入到 Web GUI 的拖拽区脚本。
-///
-/// 只把窗口拖动挂在「左上角预留的空白拖拽条」上（sidebar 顶部 36px、把
-/// logoRow 顶下去的那条 spacer），通过 Tauri 的 `startDragging()` 精确触发
-/// 原生窗口拖动；**不使用** `-webkit-app-region: drag` / `setMovableByWindowBackground`——
-/// 后者会把整个窗口背景变成拖动手柄，导致「全应用都能拖」。
-///
-/// 设计（保持原有 DOM 方案）：
-/// - 在 `[class*="hHd-Xa_root"]` 顶部插入 36px 透明 bar，把 logoRow 顶下去，
-///   留出左上角空白拖拽区；`margin-left: 80px` 避开红绿灯点击区；
-/// - 拖拽条上「按下超 4px 位移」才启动系统拖拽（点击/双击不受影响），
-///   双击仍触发 `toggle_zoom`；
-/// - 兜底：SPA 重渲染换掉拖拽条后，每 4s 重建（仍只挂在这一条上）。
-fn drag_injection_script(dport: u16, dtoken: &str) -> String {
-    let js = r#"(function(){
-  var BAR_ID = 'dsh-desktop-drag-bar';
-  var DPORT = __DPORT__, DTOKEN = "__DTOKEN__";
-  // 自诊断：把拖拽链路的关键状态 POST 到 notify 桥的 /dragdiag（仅写日志，不弹通知）。
-  function diag(msg){
-    try {
-      fetch('http://127.0.0.1:'+DPORT+'/dragdiag', {
-        method:'POST',
-        headers:{'Content-Type':'application/json','Authorization':'Bearer '+DTOKEN},
-        body: JSON.stringify({body: msg})
-      });
-    } catch(e){}
-  }
-  // 拖拽交由 Tauri 核心自带的 drag.js 处理：给拖拽条挂 `data-tauri-drag-region`
-  // 原生属性，框架在 mousedown 当下调用 plugin:window|start_dragging（scripts/drag.js，
-  // init script 注入，跨源页同样生效；macOS 双击放大由框架自带逻辑处理）。
-  // 不再自写 startDragging / pointer 处理器——避免与框架的 mousedown 双重触发。
-  function ensureSpacer(){
-    var root = document.querySelector('[class*="hHd-Xa_root"]');
-    if(!root) return false;
-    if(document.getElementById(BAR_ID)) return true;
-    var bar = document.createElement('div');
-    bar.id = BAR_ID;
-    bar.setAttribute('data-tauri-drag-region', '');
-    bar.style.cssText = 'height:36px;margin-left:80px;background:transparent;flex:0 0 auto;user-select:none;-webkit-user-select:none;cursor:grab;';
-    // 插到 logoRow 前面（把 logo 顶下去，留出左上角空白拖拽区）。
-    var logoRow = root.querySelector('[class*="logoRow"]');
-    if(logoRow && logoRow.parentNode === root){ root.insertBefore(bar, logoRow); }
-    else { root.insertBefore(bar, root.firstChild); }
-    diag('bar-created; data-tauri-drag-region set; internals='+(typeof window.__TAURI_INTERNALS__));
-    return true;
-  }
-  if(!ensureSpacer()){
-    var j = setInterval(function(){ if(ensureSpacer()) clearInterval(j); }, 250);
-    setTimeout(function(){ clearInterval(j); }, 15000);
-  }
-  // SPA 重渲染兜底：每 4s 检查一次，拖拽条被替换掉就重建（仍只挂在同一条上）。
-  setInterval(function(){ ensureSpacer(); }, 4000);
-})();"#;
-    js.replace("__DPORT__", &dport.to_string())
-        .replace("__DTOKEN__", dtoken)
-}
-
-/// 导航完成后向 Web GUI 注入拖拽区（执行 `drag_injection_script`）。
-///
-/// 「启动页 → GUI」是跨文档导航，会把早前注入的脚本整页销毁；这里改为周期性
-/// 重注入（每 2s 一次、共 ~20s），确保最终落在 GUI 页面。脚本自带守卫与 4s
-/// 自愈，重复 eval 幂等无害。
-fn inject_drag_region(app: AppHandle, nport: u16, ntoken: String) {
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Some(w) = handle.get_webview_window("main") {
-            let script = drag_injection_script(nport, &ntoken);
-            for i in 0..10_u32 {
-                if i > 0 {
-                    tokio::time::sleep(Duration::from_millis(2000)).await;
-                }
-                if let Err(e) = w.eval(&script) {
-                    log::warn!("拖拽区注入失败：{e}");
-                } else if i == 0 {
-                    log::info!("macOS Overlay 拖拽区已注入：仅左上角 36px 空白条可拖（startDragging，已禁用整窗 movableByWindowBackground）");
-                }
-            }
-        }
-    });
 }
 
 /// 生成本地通知服务器的访问 token（防本机其它进程误触发；非加密学强度）。
@@ -592,18 +549,6 @@ async fn handle_notify_conn(sock: &mut tokio::net::TcpStream, app: &AppHandle, t
     if !req.contains(&format!("Bearer {token}")) {
         let _ = sock
             .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
-            .await;
-        return;
-    }
-    // 拖拽自诊断路由：仅记录日志，不触发通知/角标（供排查 startDragging 链路）。
-    if req.starts_with("POST /dragdiag ") {
-        let body = req.split("\r\n\r\n").nth(1).unwrap_or("").trim().to_string();
-        log::info!("[dragdiag] {body}");
-        let _ = sock
-            .write_all(
-                format!("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n{CORS_HEADERS}\r\n")
-                    .as_bytes(),
-            )
             .await;
         return;
     }
@@ -715,11 +660,162 @@ fn inject_task_notifier(app: AppHandle, port: u16, token: &str) {
     });
 }
 
+/// dsh 数据目录（$DSH_HOME 或 ~/.dsh）。
+fn dsh_home() -> PathBuf {
+    if let Ok(h) = std::env::var("DSH_HOME") {
+        if !h.trim().is_empty() {
+            return PathBuf::from(h);
+        }
+    }
+    #[cfg(windows)]
+    let base = std::env::var("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+    #[cfg(not(windows))]
+    let base = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    base.join(".dsh")
+}
+
+/// 定位本应用自带的桌面 chrome 插件包（dsh-desktop-app）。
+/// 优先级：DSH_DESKTOP_PLUGIN 环境变量（目录）> 与可执行文件同级的 dsh-desktop-app（打包）>
+/// 从可执行文件向上找 package.json.name == dsh-desktop-app 的目录（开发仓库根）。
+fn desktop_plugin_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("DSH_DESKTOP_PLUGIN") {
+        let p = PathBuf::from(p);
+        if p.join("package.json").exists() {
+            return Some(p);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let sibling = exe.parent()?.join("dsh-desktop-app");
+    if sibling.join("package.json").exists() {
+        return Some(sibling);
+    }
+    let mut dir = exe.parent()?;
+    // 向上找 package.json.name == dsh-desktop-app 的目录（开发仓库根）。
+    // 跳过中间非同名 package.json（如 desktop/、src-tauri/ 的脚手架清单）。
+    for _ in 0..10 {
+        let pkg = dir.join("package.json");
+        if pkg.exists() {
+            if let Ok(text) = std::fs::read_to_string(&pkg) {
+                if text.contains("\"name\": \"dsh-desktop-app\"") || text.contains("\"name\":\"dsh-desktop-app\"") {
+                    return Some(dir.to_path_buf());
+                }
+            }
+        }
+        dir = dir.parent()?;
+    }
+    None
+}
+
+/// 生成安装到 web profile 的插件 spec：开发（cargo target 内）用 link: 实时链接，
+/// 打包用 file:（内嵌副本）。
+fn desktop_plugin_spec() -> Option<String> {
+    let dir = desktop_plugin_dir()?;
+    let abs = dir.canonicalize().ok()?;
+    let dev = abs.to_string_lossy().contains("/target/");
+    Some(if dev {
+        format!("link:{}", abs.display())
+    } else {
+        format!("file:{}", abs.display())
+    })
+}
+
+/// 在 web profile 里执行官方 `plugin add`（Windows 走 `node <bin.js>`，其余走 `dsh`）。
+/// 参考项目同机制：dsh 会按需初始化 profile、转发给 pnpm、并把声明了 dsh.bundle 的
+/// 新依赖自动 reconcile 进 dsh.profile.bundles。
+fn run_dsh_plugin_add(spec: &str) -> Option<std::process::ExitStatus> {
+    #[cfg(target_os = "windows")]
+    {
+        let node = find_node()?;
+        let js = find_dsh_bin_js()?;
+        std::process::Command::new(node)
+            .arg(&js)
+            .args(["plugin", "--profile", "web", "add", "--config.minimumReleaseAge=0"])
+            .arg(spec)
+            .status()
+            .ok()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let dsh = find_dsh_bin()?;
+        std::process::Command::new(&dsh)
+            .args(["plugin", "--profile", "web", "add", "--config.minimumReleaseAge=0"])
+            .arg(spec)
+            .status()
+            .ok()
+    }
+}
+
+/// 确保 web profile 已挂载桌面 chrome 插件（dsh-desktop-app）。
+/// 检测缺失时通过官方 `dsh plugin --profile web add <spec>` 安装（代码内完成，
+/// 不手工改任何 profile 配置）；幂等：bundles 已含且 node_modules 存在则跳过。
+fn ensure_web_profile_plugin() {
+    let Some(spec) = desktop_plugin_spec() else {
+        log::warn!("未定位到 dsh-desktop-app 插件包，跳过 web profile 接线");
+        return;
+    };
+    let web_dir = dsh_home().join("profiles/web");
+    let pkg_path = web_dir.join("package.json");
+    let present_in_manifest = pkg_path
+        .exists()
+        .then(|| std::fs::read_to_string(&pkg_path).ok())
+        .flatten()
+        .map(|text| text.contains("dsh-desktop-app"))
+        .unwrap_or(false);
+    if present_in_manifest && web_dir.join("node_modules/dsh-desktop-app").exists() {
+        log::info!("web profile 已含 dsh-desktop-app 插件，跳过安装");
+        return;
+    }
+    match run_dsh_plugin_add(&spec) {
+        Some(s) if s.success() => {
+            log::info!("已通过 `dsh plugin --profile web add` 把桌面 chrome 插件装入 web profile：{spec}");
+        }
+        Some(s) => log::error!("dsh plugin add 失败（退出码 {}）", s.code().unwrap_or(-1)),
+        None => log::error!("dsh plugin add 执行失败：找不到 dsh/node 命令"),
+    }
+}
+
+/// 桌面壳启动时传给 dsh 的 launcher 级内置 overlay 路径（setup 阶段写入 OnceLock）。
+static DESKTOP_OVERLAY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// 桌面壳内置 overlay：禁用 stock `ui-layout`，让 dsh-desktop-app 插件的
+/// root slot + layout 服务接管桌面布局（等价参考项目 advanced 组合里
+/// `{ id: 'ui-layout', disabled: true }`）。写入 app 数据目录，幂等。
+/// 只作用于桌面壳这次启动（`--patch` overlay），浏览器 GUI 不受影响。
+fn desktop_overlay_path(app: &tauri::AppHandle) -> PathBuf {
+    let Some(dir) = app.path().app_data_dir().ok() else {
+        return PathBuf::from("/tmp/dsh-desktop-overlay.yml");
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("desktop-overlay.yml");
+    let content = "- id: ui-layout\n  disabled: true\n";
+    let stale = std::fs::read_to_string(&path).map(|t| t != content).unwrap_or(true);
+    if stale {
+        let _ = std::fs::write(&path, content);
+    }
+    path
+}
+
+/// 桌面壳加载 Web GUI 的地址：附加 desktop 标记，让 dsh-desktop-app 插件的
+/// client 端（advanced shell）识别「当前在桌面壳里」，从而接管 root slot 渲染
+/// 标题栏/拖拽区。普通浏览器/无标记访问不激活任何桌面 UI。
+fn desktop_url(port: u16) -> String {
+    let platform = if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "win32"
+    } else {
+        "linux"
+    };
+    format!(
+        "http://127.0.0.1:{port}/?dsh-desktop-mode=advanced&dsh-desktop-platform={platform}"
+    )
+}
+
 /// 轮询等待服务就绪，然后把主窗口导航到 Web GUI；失败则跳错误页。
 /// `nport`/`ntoken` 是通知桥的端口与令牌，导航完成后才注入监听脚本。
 async fn wait_ready_and_navigate(app: AppHandle, port: u16, nport: u16, ntoken: String) {
     let state = app.state::<DshState>();
-    let url = format!("http://127.0.0.1:{port}/");
+    let url = desktop_url(port);
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         if state.spawn_failed.load(Ordering::SeqCst) {
@@ -734,7 +830,6 @@ async fn wait_ready_and_navigate(app: AppHandle, port: u16, nport: u16, ntoken: 
                     show_error(&app, "spawn-failed");
                     return;
                 }
-                inject_drag_region(app.clone(), nport, ntoken.clone());
                 // 导航后注入监听：0.3.0 在 setup 阶段提前注入，冷启动时脚本
                 // 落在加载页、随导航销毁（通知收不到的根因之二）。
                 inject_task_notifier(app.clone(), nport, &ntoken);
@@ -1153,11 +1248,16 @@ pub fn run() {
             pre_zoom_geom: Mutex::new(None),
         })
         .setup(|app| {
+            // 桌面壳内置 overlay（禁 stock ui-layout），spawn 时作为 --patch 传入。
+            let _ = DESKTOP_OVERLAY.set(desktop_overlay_path(app.handle()));
             let port = app_port();
             let state = app.state::<DshState>();
             if port_open(port) {
                 log::info!("127.0.0.1:{port} 已有服务在监听，直接复用现有实例");
             } else {
+                // 即将由本应用拉起 dsh：先确保 web profile 已挂载桌面 chrome 插件
+                //（参考项目机制：检测缺失则用官方 `dsh plugin --profile web add` 装上）。
+                ensure_web_profile_plugin();
                 match spawn_dsh(port) {
                     Ok(child) => {
                         log::info!("dsh 子进程已启动（PID {}）", child.id());
@@ -1186,9 +1286,18 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 wait_ready_and_navigate(handle, port, nport, nav_token).await;
             });
-            // 不再设置 NSWindow movableByWindowBackground —— 那会让整个窗口背景
-            // 都能被拖动（"全应用可拖"）。窗口拖动只由注入脚本里挂在上方空白
-            // 拖拽条上的 startDragging() 精确触发。
+            // 窗口拖动完全交由 dsh-desktop-app 插件的 client 端（root slot 里的
+            // AdvancedFrame）渲染拖拽区并挂 data-tauri-drag-region；这里不再注入
+            // 任何脚本，也不再使用 movableByWindowBackground（那会让整窗可拖）。
+            // macOS 用 titleBarStyle:Overlay（保留原生红绿灯）；
+            // Windows/Linux 隐藏原生标题栏（decorations:false），标题栏 UI 由
+            // 插件 client 自绘 caption 行 + 窗口按钮。
+            #[cfg(not(target_os = "macos"))]
+            if let Some(w) = app.get_webview_window("main") {
+                if let Err(e) = w.set_decorations(false) {
+                    log::warn!("关闭主窗口原生标题栏失败：{e}");
+                }
+            }
             // 测试钩子：DSH_DESKTOP_AUTO_QUIT=1 时延迟自动退出（模拟托盘退出，验证子进程回收）
             if std::env::var("DSH_DESKTOP_AUTO_QUIT").as_deref() == Ok("1") {
                 let handle = app.handle().clone();
@@ -1336,18 +1445,6 @@ mod tests {
     }
 
     #[test]
-    fn drag_injection_script_precise_drag() {
-        let js = drag_injection_script(12345, "test-token");
-        // 拖拽只能挂在左上角预留的空白条上（startDragging），不得启用整窗拖动。
-        assert!(js.contains("dsh-desktop-drag-bar"), "注入脚本应创建左上角拖拽条");
-        assert!(js.contains("data-tauri-drag-region"), "应挂 Tauri 原生 data-tauri-drag-region 属性（框架级 start_dragging）");
-        assert!(js.contains("hHd-Xa_root"), "应定位 sidebar 根容器以插入空白拖拽条");
-        assert!(js.contains("logoRow"), "拖拽条应插在 logoRow 前（把 logo 顶下去留出空白区）");
-        assert!(!js.contains("-webkit-app-region"), "不应再使用 -webkit-app-region（会退化为整窗拖拽）");
-        assert!(!js.contains("movableByWindowBackground"), "不应再让整个窗口背景可拖");
-        assert!(!js.contains("data:image/png;base64,"), "不应注入任何图标（不改 Web GUI 视觉）");
-        assert!(!js.contains("Deepseek Harness"), "不应注入应用名（不改 Web GUI 文本）");
-    }
 
     #[test]
     fn dsh_state_default_field_types() {

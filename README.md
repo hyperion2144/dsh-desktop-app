@@ -19,7 +19,7 @@
 - 应用展示名：**Deepseek Harness**（与已安装的 `DeepSeek Harness.app` 保持一致）
 - 技术标识：ASCII 的 `dsh-desktop-app` / `dsh-desktop` / `com.arcreel.dsh-desktop`
 - 应用图标：复用已安装的 `DeepSeek Harness.app` 的 `icon.icns`（保真度最高的 macOS icns）
-- 应用内左上角图标：保留 DSH Web GUI 原始样式；仅在 sidebar 顶部注入透明拖拽条把 logo 顶下去，留出的左上角空白区作为唯一拖拽区（不改名/不改图标）
+- 应用内左上角图标：保留 DSH Web GUI 原始样式；桌面 chrome（拖拽条/标题栏占位/窗口按钮）由内置 `dsh-desktop-app` 插件的 client 提供——应用启动时自动把插件挂进 web profile（走官方 `dsh plugin --profile web add`，幂等检测），窗口加载 URL 带 `dsh-desktop-mode=advanced&dsh-desktop-platform=<平台>` 标记，插件 client 借此接管 root slot 渲染拖拽区/标题栏；普通浏览器访问不激活、不受影响
 
 ## 特性
 
@@ -30,7 +30,8 @@
 - **进程回收**：只回收本次启动 spawn 的 dsh 子进程，stdout/stderr 落盘日志
 - **单实例**：重复双击聚焦已有窗口，不会拉起第二个服务
 - **窗口状态记忆**：位置与大小自动恢复
-- **macOS Overlay 标题栏**：主窗口使用 `titleBarStyle: "Overlay"`，系统标题栏叠在 Web GUI 之上（VS Code 风格）；窗口拖动只挂在左上角预留的空白拖拽条上（注入 36px 透明条把 logo 顶下去，`startDragging()` 精确到手柄区），不禁用任何其它区域的交互、不整窗可拖；不改名称/不改图标
+- **桌面 chrome（插件式，参考 dsh-plugin-desktop 实现）**：由内置 `dsh-desktop-app` 插件 client（`src/client/`，构建产物 `lib/client.js`）接管 dsh web 的 root slot，按平台渲染——macOS `titleBarStyle: Overlay` 保留原生红绿灯 + sidebar 顶部空白拖拽区（`data-tauri-drag-region` 原生拖拽，`core:window` 权限经 remote capability 放行）；Windows/Linux 用 `decorations:false` 隐藏系统标题栏，client 自绘 caption 行 + 最小化/最大化/关闭按钮；布局/配色全部跟随主题 token（`--dsw-alias-bg-base` 等），无硬编码、可换主题；macOS Overlay 顶部原生标题栏材质属系统标准行为
+- **自动接线 web profile**：应用启动（需拉起 dsh 时）检测 `~/.dsh/profiles/web` 是否已挂 `dsh-desktop-app`，缺失则用官方 `dsh plugin --profile web add <spec>` 装入（幂等，代码内完成、不手工改配置）；spawn 时带内置 overlay `--patch` 禁用 stock `ui-layout`，让桌面 root slot 接管布局，浏览器 GUI 不受影响
 - **鲸鱼娘桌宠**：透明置顶无边框小窗，纯 CSS 呼吸/漂浮动画 + 椭圆阴影；拖拽移动
   （4px 阈值区分点击）、左键唤起主窗、右键菜单（穿透开关/隐藏/退出）、任务完成
   弹气泡；位置记忆（多屏钳位 + 拖拽防抖）；托盘「显示/隐藏桌宠」开关

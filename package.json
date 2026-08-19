@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-app",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "DSH 桌面壳「小南梁」技能包：把 DeepSeek Harness 封装成 Tauri 2 桌面应用（macOS+Windows），含托盘常驻、任务通知、鲸鱼娘桌宠、国内镜像加速、Windows 无管理员工具链",
   "type": "module",
   "main": "index.js",
@@ -12,9 +12,19 @@
   "files": [
     "index.js",
     "cordis.patch.yml",
+    "lib/client.js",
     "README.md",
     "LICENSE"
   ],
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -24,9 +34,26 @@
     "china-mirror",
     "windows"
   ],
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs"
+  },
   "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-theme"
+      ],
+      "platform": "web"
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  },
+  "allowScripts": {
+    "esbuild@0.24.2": true
   }
 }
