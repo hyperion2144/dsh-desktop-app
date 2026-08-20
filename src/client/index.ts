@@ -23,10 +23,9 @@ export const inject = [
  * @param ctx - browser Cordis context.
  */
 export function apply(ctx: ClientContext): void {
+  // 桌面 webview（含复用降级/无标记场景）都接管外链打开；纯浏览器无 Tauri IPC 时 no-op
+  installExternalLinkHandler()
   const environment = parseDesktopClientEnvironment(window.location.search)
   if (!environment) return
-  // 桌面壳 webview：外链统一转交系统默认浏览器打开（WKWebView/WebView2
-  // 对 target=_blank 或外部域链接默认无反应）。
-  installExternalLinkHandler()
   if (environment.mode === 'advanced') applyAdvancedShell(ctx, environment)
 }

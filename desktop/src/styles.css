@@ -196,3 +196,72 @@ h1 {
   color: #5c6672;
   border-top: 1px solid #232a36;
 }
+
+/* ---- 接入模式选择（复用外部实例时） ---- */
+.mode-box {
+  margin-top: 1.5rem;
+  width: min(560px, 92vw);
+  background: #141a24;
+  border: 1px solid #2c3a52;
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  text-align: left;
+}
+
+.mode-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #e6e8eb;
+  margin-bottom: 0.5rem;
+}
+
+.mode-desc {
+  font-size: 0.82rem;
+  color: #9aa3af;
+  line-height: 1.6;
+  margin-bottom: 0.9rem;
+}
+
+.mode-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.mode-actions button {
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #d7dde4;
+  background: #1d2633;
+  border: 1px solid #35435a;
+  border-radius: 8px;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+}
+
+.mode-actions button:hover {
+  border-color: #4d7cfe;
+  color: #fff;
+}
+
+.mode-actions button.primary {
+  background: linear-gradient(135deg, #4d7cfe 0%, #7b5cff 100%);
+  border-color: transparent;
+  color: #fff;
+}
+
+.mode-actions button.primary:hover {
+  filter: brightness(1.08);
+}
+
+.mode-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mode-foot {
+  margin-top: 0.6rem;
+  font-size: 0.74rem;
+  color: #6b7280;
+}

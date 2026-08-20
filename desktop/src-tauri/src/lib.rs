@@ -83,6 +83,9 @@ struct DshState {
     child: Mutex<Option<Child>>,
     /// 子进程是否由本次启动启动（决定退出时是否回收、重启时是否生效）。
     spawned_this_run: AtomicBool,
+    /// 启动时端口已被外部 dsh web 占用（复用外部实例）：需要在加载页选择
+    /// 兼容（复用、标准布局）或高级（停用外部实例、用桌面 overlay 实例重启）。
+    mode_prompt_needed: AtomicBool,
     /// spawn 失败标志（立即终止等待并跳错误页）。
     spawn_failed: AtomicBool,
     /// 重启流程进行中（防止重复点击托盘重启项导致并发 kill/spawn）。
@@ -308,7 +311,9 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16) -> Result<Child, SpawnError> {
     // `--patch` overlay。桌面壳启动总是带内置 overlay（禁 stock ui-layout，
     // 让我们插件的 root slot + layout 服务接管桌面布局，等价参考项目 advanced
     // 组合），并可选叠加 DSH_DESKTOP_EXTRA_PATCH 调试 overlay（可重复 --patch）。
-    let mut launcher_args: Vec<std::ffi::OsString> = vec!["--profile".into(), "web".into()];
+    // --no-open：dsh 升级后默认会打开系统浏览器；桌面壳自行导航，关闭该行为
+    let mut launcher_args: Vec<std::ffi::OsString> =
+        vec!["--profile".into(), "web".into(), "--no-open".into()];
     if let Some(overlay) = DESKTOP_OVERLAY.get() {
         launcher_args.push("--patch".into());
         launcher_args.push(overlay.clone().into_os_string());
@@ -491,7 +496,12 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16) -> Result<Child, SpawnError> {
     })?;
     let mut cmd = Command::new(&node);
     let mut launcher_args: Vec<std::ffi::OsString> =
-        vec![bin_js.clone().into(), "--profile".into(), "web".into()];
+        vec![
+            bin_js.clone().into(),
+            "--profile".into(),
+            "web".into(),
+            "--no-open".into(),
+        ];
     if let Some(overlay) = DESKTOP_OVERLAY.get() {
         launcher_args.push("--patch".into());
         launcher_args.push(overlay.clone().into_os_string());
@@ -843,12 +853,21 @@ fn desktop_plugin_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 fn desktop_plugin_spec(app: &tauri::AppHandle) -> Option<String> {
     let dir = desktop_plugin_dir(app)?;
     let abs = dir.canonicalize().ok()?;
-    let dev = abs.to_string_lossy().contains("/target/");
-    Some(if dev {
-        format!("link:{}", abs.display())
-    } else {
-        format!("file:{}", abs.display())
-    })
+    #[cfg(target_os = "windows")]
+    {
+        // Windows：dsh plugin add 不接受 file:/link: 前缀，直接给盘符绝对路径
+        return Some(abs.display().to_string());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 开发（cargo target 内解析到仓库根）用 link: 实时链接；打包（内嵌资源）用 file:
+        let dev = abs.to_string_lossy().contains("/target/");
+        Some(if dev {
+            format!("link:{}", abs.display())
+        } else {
+            format!("file:{}", abs.display())
+        })
+    }
 }
 
 /// 在 web profile 里执行官方 `plugin add`（Windows 走 `node <bin.js>`，其余走 `dsh`）。
@@ -1270,6 +1289,86 @@ fn open_external_impl(url: &str) -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
+/// 查询启动是否需要用户选择「兼容/高级」模式（启动页加载后轮询）。
+#[tauri::command]
+fn get_mode_prompt_needed(state: tauri::State<DshState>) -> bool {
+    state.mode_prompt_needed.load(Ordering::SeqCst)
+}
+
+/// 用户在启动页选择接入模式（仅复用外部 dsh web 实例时出现）。
+/// - `compat`：复用外部实例、标准布局、系统原生标题栏（不启用桌面 chrome）；
+/// - `advanced`：停用占用端口的现有 dsh（含外部进程），以桌面 overlay 实例重启并启用桌面 chrome。
+#[tauri::command]
+fn choose_desktop_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+    let state = app.state::<DshState>();
+    state.mode_prompt_needed.store(false, Ordering::SeqCst);
+    match mode.as_str() {
+        "compat" => {
+            log::info!("[mode] 用户选择兼容模式：复用外部实例（标准布局）");
+            let port = app_port();
+            let nport = state.notify_port.load(Ordering::SeqCst);
+            let ntoken = state.notify_token.lock().unwrap().clone();
+            tauri::async_runtime::spawn(async move {
+                wait_ready_and_navigate(app, port, nport, ntoken).await;
+            });
+            Ok(())
+        }
+        "advanced" => {
+            log::info!("[mode] 用户选择高级模式：停用外部实例并以桌面 overlay 实例重启");
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let port = app_port();
+                // 1) 停用占用端口的现有 dsh（外部进程，跨平台按端口查 PID）
+                let pids = listener_pids(port);
+                if pids.is_empty() {
+                    log::warn!("[mode] 端口 {port} 未发现可停用的 dsh 进程");
+                } else {
+                    log::info!("[mode] 停止占用 {port} 的进程：{pids:?}");
+                    for pid in pids {
+                        kill_process(pid);
+                    }
+                }
+                // 2) 等端口释放
+                let mut freed = false;
+                for _ in 0..40 {
+                    if !port_open(port) {
+                        freed = true;
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                if !freed {
+                    log::error!("[mode] 端口 {port} 未释放，高级模式失败");
+                    show_error(&handle, "timeout");
+                    return;
+                }
+                // 3) 以桌面 overlay 实例拉起
+                match spawn_dsh(&handle, port) {
+                    Ok(child) => {
+                        *handle.state::<DshState>().child.lock().unwrap() = Some(child);
+                        handle.state::<DshState>().spawned_this_run.store(true, Ordering::SeqCst);
+                    }
+                    Err(e) => {
+                        let msg = match &e {
+                            SpawnError::NotFound(s) | SpawnError::Other(s) => s.clone(),
+                        };
+                        log::error!("[mode] spawn 失败：{msg}");
+                        show_error(&handle, "spawn-failed");
+                        return;
+                    }
+                }
+                // 4) 重置标志并导航（advanced=true，桌面 chrome 生效）
+                handle.state::<DshState>().spawn_failed.store(false, Ordering::SeqCst);
+                let nport = handle.state::<DshState>().notify_port.load(Ordering::SeqCst);
+                let ntoken = handle.state::<DshState>().notify_token.lock().unwrap().clone();
+                wait_ready_and_navigate(handle, port, nport, ntoken).await;
+            });
+            Ok(())
+        }
+        _ => Err(format!("未知的桌面接入模式：{mode}")),
+    }
+}
+
 /// 构建菜单栏托盘：左键显示窗口，菜单提供显示/隐藏桌宠/退出。
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
@@ -1425,11 +1524,14 @@ pub fn run() {
             pet_quit,
             pet_toggle_passthrough,
             toggle_zoom,
-            open_external
+            open_external,
+            choose_desktop_mode,
+            get_mode_prompt_needed
         ])
 .manage(DshState {
             child: Mutex::new(None),
             spawned_this_run: AtomicBool::new(false),
+            mode_prompt_needed: AtomicBool::new(false),
             spawn_failed: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
             quitting: AtomicBool::new(false),
@@ -1453,6 +1555,8 @@ pub fn run() {
             });
             if port_open(port) {
                 log::info!("127.0.0.1:{port} 已有服务在监听，直接复用现有实例");
+                // 外部实例复用会禁用桌面 chrome：在加载页弹「兼容/高级」模式选择
+                state.mode_prompt_needed.store(true, Ordering::SeqCst);
             } else {
                 // 即将由本应用拉起 dsh：先确保 web profile 已挂载桌面 chrome 插件
                 //（参考项目机制：检测缺失则用官方 `dsh plugin --profile web add` 装上）。
@@ -1480,11 +1584,24 @@ pub fn run() {
             let (nport, ntoken) = start_notify_server(app.handle().clone());
             state.notify_port.store(nport, Ordering::SeqCst);
             *state.notify_token.lock().unwrap() = ntoken.clone();
-            let handle = app.handle().clone();
-            let nav_token = ntoken.clone();
-            tauri::async_runtime::spawn(async move {
-                wait_ready_and_navigate(handle, port, nport, nav_token).await;
-            });
+            if state.spawned_this_run.load(Ordering::SeqCst) {
+                // 本次由桌面壳拉起实例：立即导航（advanced，桌面 chrome）
+                let handle = app.handle().clone();
+                let nav_token = ntoken.clone();
+                tauri::async_runtime::spawn(async move {
+                    wait_ready_and_navigate(handle, port, nport, nav_token).await;
+                });
+            } else {
+                // 复用了外部实例：等用户在加载页选择模式（choose_desktop_mode）再接入；
+                // 这里发一个延迟事件兜底，防止页面早于 state 标记加载完成
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    if handle.state::<DshState>().mode_prompt_needed.load(Ordering::SeqCst) {
+                        let _ = handle.emit("desktop-mode-request", serde_json::json!({}));
+                    }
+                });
+            }
             // 窗口拖动完全交由 dsh-desktop-app 插件的 client 端（root slot 里的
             // AdvancedFrame）渲染拖拽区并挂 data-tauri-drag-region；这里不再注入
             // 任何脚本，也不再使用 movableByWindowBackground（那会让整窗可拖）。
@@ -1655,6 +1772,7 @@ mod tests {
         let state = DshState {
             child: Mutex::new(None),
             spawned_this_run: AtomicBool::new(false),
+            mode_prompt_needed: AtomicBool::new(false),
             spawn_failed: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
             quitting: AtomicBool::new(false),

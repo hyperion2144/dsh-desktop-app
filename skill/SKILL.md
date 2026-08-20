@@ -287,8 +287,10 @@ light.exe 报 LGHT0311（codepage 1252 编不了中文）必失败；resources/t
 - **状态**：`DshState` = `child: Mutex<Option<Child>>` + `spawned_this_run` /
   `spawn_failed` / `quitting` / `tray_tip_shown`（AtomicBool）
 - **启动**（setup）：`TcpStream::connect_timeout`（300ms）探测 127.0.0.1:port
-  （默认 3080，env `DSH_DESKTOP_PORT` 覆盖）——已监听则复用（降级接入，不 spawn、退出不杀）；
-  空闲则 spawn；spawn 失败按 SpawnError 区分 NotFound（错误页 not-found）/
+  （默认 3080，env `DSH_DESKTOP_PORT` 覆盖；spawn 带 `--no-open` 关闭默认打开浏览器）——
+  已监听则复用外实例，启动页弹「兼容/高级」模式选择（兼容=标准布局+系统原生标题栏、不启用
+  桌面 chrome；高级=按端口停用外部实例后，用桌面 overlay 实例重启并启用桌面 chrome）；
+  空闲则 spawn 桌面 overlay 实例直接进高级；spawn 失败按 SpawnError 区分 NotFound（错误页 not-found）/
   Other（错误页 spawn-failed），失败后轮询任务直接 return、不二次导航覆盖错误页；
   async 任务每 500ms 轮询、60s 超时，就绪后
   `eval("window.location.replace('http://127.0.0.1:<port>/')")` 跳转，失败跳错误页

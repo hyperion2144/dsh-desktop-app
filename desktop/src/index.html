@@ -15,6 +15,19 @@
         <span></span><span></span><span></span>
       </div>
 
+      <section class="mode-box" id="mode-box" hidden>
+        <h2 class="mode-title">检测到已有 dsh 服务（外部实例）</h2>
+        <p class="mode-desc">
+          桌面壳默认复用外部实例做「兼容模式」（标准布局、系统原生标题栏，不启用内置
+          桌面界面）。也可以停用该实例，在桌面内以「高级模式」重启（完整桌面界面）。
+        </p>
+        <div class="mode-actions">
+          <button id="mode-compat" type="button">兼容模式（标准布局）</button>
+          <button id="mode-advanced" type="button" class="primary">高级模式（桌面界面）</button>
+        </div>
+        <p class="mode-foot" id="mode-foot">高级模式会停用当前占用的 dsh 服务进程</p>
+      </section>
+
       <section class="console" id="console-box">
         <header class="console-head">
           <span class="console-title">本地服务输出</span>
@@ -51,7 +64,45 @@
       }
 
       var tauri = window.__TAURI__;
+      var modeBox = document.getElementById("mode-box");
+      var modeCompat = document.getElementById("mode-compat");
+      var modeAdvanced = document.getElementById("mode-advanced");
+      var modeFoot = document.getElementById("mode-foot");
+
+      function showMode() {
+        if (!modeBox || modeBox.hidden === false) return;
+        modeBox.hidden = false;
+        stateEl.textContent = "○ 请选择接入模式";
+      }
+      function chooseMode(mode) {
+        if (!tauri || !tauri.core || !tauri.core.invoke) return;
+        modeCompat.disabled = true;
+        modeAdvanced.disabled = true;
+        modeFoot.textContent =
+          mode === "advanced" ? "正在停用外部服务并以高级模式启动…" : "正在进入兼容模式…";
+        tauri.core.invoke("choose_desktop_mode", { mode: mode }).catch(function (e) {
+          modeFoot.textContent = "选择失败：" + (e || "未知错误");
+        });
+      }
+      modeCompat.addEventListener("click", function () { chooseMode("compat"); });
+      modeAdvanced.addEventListener("click", function () { chooseMode("advanced"); });
+
+      // 轮询：页面可能早于 Rust state 标记加载；同时监听原生侧的兜底事件
+      var polls = 0;
+      var pollTimer = setInterval(function () {
+        if (modeBox.hidden === false) { clearInterval(pollTimer); return; }
+        if (tauri && tauri.core && tauri.core.invoke) {
+          tauri.core
+            .invoke("get_mode_prompt_needed")
+            .then(function (need) {
+              if (need) { clearInterval(pollTimer); showMode(); }
+            })
+            .catch(function () {});
+        }
+        if (++polls > 20) clearInterval(pollTimer);
+      }, 400);
       if (tauri && tauri.event && typeof tauri.event.listen === "function") {
+        tauri.event.listen("desktop-mode-request", function () { showMode(); });
         tauri.event
           .listen("dsh-console", function (e) {
             var d = e.payload || {};
