@@ -1,28 +1,18 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
-import type {} from './contracts.ts'
 import type { DesktopClientEnvironment } from './environment.ts'
-import { AdvancedFrame } from './AdvancedFrame.tsx'
-import { DesktopLayoutState } from './layout-state.ts'
-import { provideDesktopLayout } from './layout-service.ts'
+import { installLocalChrome } from './local-chrome.ts'
 import { installAdvancedStyles } from './styles.ts'
-import { DesktopThemePresenter } from './theme-presenter.ts'
 
 /**
- * 提供高级布局服务并接管桌面根 slot（照搬参考项目 advanced-shell）。
- * @param ctx - active browser Cordis context.
- * @param environment - validated mode and platform marker.
+ * 高级模式：不禁用 stock ui-layout、不接管 root、不提供 layout 服务，只在
+ * 原生布局的局部注入窗口拖拽 chrome（macOS 侧栏顶部拖拽 + 折叠加宽容纳红绿灯；
+ * Win/Linux 中间 header 顶部拖拽条 + 自绘窗口按钮，内容用 padding 顶下）。
  */
 export function applyAdvancedShell(ctx: ClientContext, environment: DesktopClientEnvironment): void {
   if (environment.mode !== 'advanced') {
     throw new Error(`dsh-desktop-tauriapp: advanced shell received mode ${JSON.stringify(environment.mode)}`)
   }
-
-  const desktopLayout = new DesktopLayoutState()
-  ctx.effect(
-    () => provideDesktopLayout(ctx, desktopLayout),
-    'desktop: layout service',
-  )
 
   ctx.effect(() => {
     document.body.dataset.dshDesktopMode = 'advanced'
@@ -35,24 +25,5 @@ export function applyAdvancedShell(ctx: ClientContext, environment: DesktopClien
     }
   }, 'desktop: advanced shell styles')
 
-  ctx.effect(() => {
-    const presenter = new DesktopThemePresenter()
-    presenter.apply(ctx.theme.getTheme())
-    const off = ctx.on('theme/change', snapshot => { presenter.apply(snapshot) })
-    return () => {
-      off()
-      presenter.dispose()
-    }
-  }, 'desktop: theme presenter')
-
-  ctx.effect(() => ctx.slots.register({
-    name: 'root',
-    children: {
-      'sidebar': { kind: 'single', scope: 'root' },
-      'conversation': { kind: 'single', scope: 'session-maybe' },
-      'details': { kind: 'single', scope: 'session' },
-      'shell.overlay': { kind: 'list', scope: 'root' },
-    },
-    inject: () => ({ layout: desktopLayout, platform: environment.platform }),
-  }, AdvancedFrame), 'desktop: advanced root slot')
+  ctx.effect(() => installLocalChrome(environment.platform), 'desktop: local window chrome')
 }

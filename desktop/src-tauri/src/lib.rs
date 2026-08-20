@@ -2,8 +2,9 @@
 //!
 //! 职责：
 //! 1. 启动时探测本地 dsh 服务（默认 127.0.0.1:3080，`DSH_DESKTOP_PORT` 可覆盖）：
-//!    已监听则复用现有实例并「降级接入」（不带 advanced 标记，避免 layout 服务冲突）；
-//!    空闲则由本应用 spawn 一个带禁 stock ui-layout 的 `--patch` overlay 的实例并启用桌面 chrome；
+//!    已监听则复用现有实例并「降级接入」（不带 advanced 标记，系统原生标题栏）；
+//!    空闲/高级模式则由本应用 spawn 实例，桌面插件在原生布局内注入局部拖拽区
+//!    （不禁用 stock ui-layout；macOS 侧栏顶部拖拽 + 折叠加宽，Win/Linux 中间 header 顶部拖拽 + 自绘按钮）；
 //! 2. 轮询服务就绪后把主窗口从 loading 页导航到 Web GUI；
 //! 3. 托盘常驻：关闭窗口仅隐藏，托盘菜单可显示/退出；
 //! 4. 应用退出时回收本次启动的子进程，复用已有实例时不动它。
@@ -30,8 +31,8 @@ use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_notification::NotificationExt;
 
 /// dsh 服务端口（默认 3080，与浏览器/终端共用；`DSH_DESKTOP_PORT` 可覆盖）。
-/// 策略：端口已有 dsh web → 复用并降级接入（不带 advanced 标记）；空闲 → 由本应用
-/// spawn 一个携带禁 stock ui-layout 的 `--patch` overlay 的实例并启用桌面 chrome。
+/// 策略：端口已有 dsh web → 复用并降级接入（不带 advanced 标记、系统原生标题栏）；
+/// 空闲/高级 → 由本应用 spawn 实例并注入桌面局部拖拽 chrome（不禁用 ui-layout）。
 /// 注意：同一 profile 只允许一个 dsh web 实例并发（task-board 等插件持有排它锁），
 /// 因此不要用独立端口再起第二实例。
 fn app_port() -> u16 {
@@ -323,7 +324,7 @@ fn dsh_runtime_path(bin: &std::path::Path) -> std::ffi::OsString {
 /// spawn `dsh web --host 127.0.0.1 --port <port>`；stdout/stderr 转发到日志，
 /// 并实时 emit 到启动加载页的「本地服务输出」控制台（`dsh-console` 事件）。
 #[cfg(unix)]
-fn spawn_dsh(app: &tauri::AppHandle, port: u16, advanced: bool) -> Result<Child, SpawnError> {
+fn spawn_dsh(app: &tauri::AppHandle, port: u16, _advanced: bool) -> Result<Child, SpawnError> {
     let bin = find_dsh_bin().ok_or_else(|| {
         SpawnError::NotFound(
             "未找到 dsh 命令。请执行 `npm i -g @deepseek-ai/dsh` 或设置 DSH_BIN 环境变量。"
@@ -331,25 +332,17 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16, advanced: bool) -> Result<Child,
         )
     })?;
     let mut cmd = Command::new(&bin);
-    // 统一用 `dsh --profile web ...`（等价于 `dsh web`）以便带 launcher 级
-    // `--patch` overlay。桌面壳启动总是带内置 overlay（禁 stock ui-layout，
-    // 让我们插件的 root slot + layout 服务接管桌面布局，等价参考项目 advanced
-    // 组合），并可选叠加 DSH_DESKTOP_EXTRA_PATCH 调试 overlay（可重复 --patch）。
+    // 统一用 `dsh --profile web ...`（等价于 `dsh web`）。高级模式不再叠加任何
+    // 内置 overlay：不禁用 stock ui-layout，桌面插件在原生布局内注入局部拖拽区；
+    // 仅当设置 DSH_DESKTOP_EXTRA_PATCH 调试环境变量时叠加该 `--patch` overlay。
     // 注意顺序：--patch 必须早于 --no-open/--host —— dsh CLI 用 passThrough 解析，
     // 靠后的 --patch 会被透传给 web-app 而报 unknown option '--patch'。
     let mut launcher_args: Vec<std::ffi::OsString> =
         vec!["--profile".into(), "web".into()];
-    if advanced {
-        // 高级模式：禁 stock ui-layout，让桌面 chrome 接管布局；兼容模式不加 overlay
-        if let Some(overlay) = DESKTOP_OVERLAY.get() {
+    if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
+        if !patch.trim().is_empty() {
             launcher_args.push("--patch".into());
-            launcher_args.push(overlay.clone().into_os_string());
-        }
-        if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
-            if !patch.trim().is_empty() {
-                launcher_args.push("--patch".into());
-                launcher_args.push(patch.into());
-            }
+            launcher_args.push(patch.into());
         }
     }
     // --no-open：dsh 升级后默认打开系统浏览器，桌面壳自行导航故关闭
@@ -511,7 +504,7 @@ fn find_dsh_bin_js() -> Option<PathBuf> {
 /// npm 全局安装的 dsh 在 Windows 是 dsh.cmd shim，直接 CreateProcess 有引号
 /// 转义坑，所以直接用 node.exe 执行 bin.js；CREATE_NO_WINDOW 防止闪黑窗。
 #[cfg(windows)]
-fn spawn_dsh(app: &tauri::AppHandle, port: u16, advanced: bool) -> Result<Child, SpawnError> {
+fn spawn_dsh(app: &tauri::AppHandle, port: u16, _advanced: bool) -> Result<Child, SpawnError> {
     use std::os::windows::process::CommandExt;
     let node = find_node().ok_or_else(|| {
         SpawnError::NotFound(
@@ -531,17 +524,12 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16, advanced: bool) -> Result<Child,
             "--profile".into(),
             "web".into(),
         ];
-    if advanced {
-        // 高级模式：禁 stock ui-layout，让桌面 chrome 接管布局；兼容模式不加 overlay
-        if let Some(overlay) = DESKTOP_OVERLAY.get() {
+    // 高级模式不再叠加内置 overlay（不禁用 stock ui-layout，局部拖拽 chrome 由 client 注入）；
+    // 仅当设置 DSH_DESKTOP_EXTRA_PATCH 调试环境变量时叠加该 `--patch` overlay。
+    if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
+        if !patch.trim().is_empty() {
             launcher_args.push("--patch".into());
-            launcher_args.push(overlay.clone().into_os_string());
-        }
-        if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
-            if !patch.trim().is_empty() {
-                launcher_args.push("--patch".into());
-                launcher_args.push(patch.into());
-            }
+            launcher_args.push(patch.into());
         }
     }
     // --no-open：dsh 升级后默认打开系统浏览器，桌面壳自行导航故关闭
@@ -959,32 +947,11 @@ fn ensure_web_profile_plugin(app: &tauri::AppHandle) {
     }
 }
 
-/// 桌面壳启动时传给 dsh 的 launcher 级内置 overlay 路径（setup 阶段写入 OnceLock）。
-static DESKTOP_OVERLAY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-/// 桌面壳内置 overlay：禁用 stock `ui-layout`，让 dsh-desktop-tauriapp 插件的
-/// root slot + layout 服务接管桌面布局（等价参考项目 advanced 组合里
-/// `{ id: 'ui-layout', disabled: true }`）。写入 app 数据目录，幂等。
-/// 只作用于桌面壳这次启动（`--patch` overlay），浏览器 GUI 不受影响。
-fn desktop_overlay_path(app: &tauri::AppHandle) -> PathBuf {
-    let Some(dir) = app.path().app_data_dir().ok() else {
-        return PathBuf::from("/tmp/dsh-desktop-tauriapp-overlay.yml");
-    };
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("desktop-overlay.yml");
-    let content = "- id: ui-layout\n  disabled: true\n";
-    let stale = std::fs::read_to_string(&path).map(|t| t != content).unwrap_or(true);
-    if stale {
-        let _ = std::fs::write(&path, content);
-    }
-    path
-}
-
 /// 桌面壳加载 Web GUI 的地址。
-/// `advanced=true`（本次由桌面壳 spawn 了带 overlay 的实例）：附加 desktop 标记，
-/// 插件 client 借此接管 root slot 渲染标题栏/拖拽区；
-/// `advanced=false`（复用了外部已有实例）：不带标记，按标准布局「降级接入」，
-/// 避免与 stock ui-layout 的 layout 服务冲突。普通浏览器/无标记访问不激活桌面 UI。
+/// `advanced=true`（本次由桌面壳 spawn 了实例）：附加 desktop 标记，插件 client
+/// 在原生布局内注入局部拖拽区（不禁用 ui-layout）；
+/// `advanced=false`（复用了外部已有实例）：不带标记，标准布局 + 系统原生标题栏。
+/// 普通浏览器/无标记访问不激活桌面 UI。
 fn desktop_url(port: u16, advanced: bool) -> String {
     if !advanced {
         return format!("http://127.0.0.1:{port}/");
@@ -1369,7 +1336,7 @@ fn log_diag(msg: String) {
 
 /// 用户在启动页选择接入模式（仅复用外部 dsh web 实例时出现）。
 /// - `compat`：复用外部实例、标准布局、系统原生标题栏（不启用桌面 chrome）；
-/// - `advanced`：停用占用端口的现有 dsh（含外部进程），以桌面 overlay 实例重启并启用桌面 chrome。
+/// - `advanced`：停用占用端口的现有 dsh（含外部进程），以桌面实例重启并注入局部拖拽 chrome。
 #[tauri::command]
 fn choose_desktop_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
     let state = app.state::<DshState>();
@@ -1589,7 +1556,7 @@ fn restart_dsh_in_mode(app: &AppHandle, target_mode: u8) {
             handle.state::<DshState>().restarting.store(false, Ordering::SeqCst);
             return;
         }
-        // 2) 按目标模式拉起（高级=带 overlay；兼容=不带 overlay、标准布局）
+        // 2) 按目标模式拉起（高级=注入局部拖拽 chrome；兼容=标准布局 + 原生标题栏）
         let advanced = target_mode == MODE_ADVANCED;
         match spawn_dsh(&handle, port, advanced) {
             Ok(child) => {
@@ -1687,8 +1654,6 @@ pub fn run() {
             pre_zoom_geom: Mutex::new(None),
         })
         .setup(|app| {
-            // 桌面壳内置 overlay（禁 stock ui-layout），spawn 时作为 --patch 传入。
-            let _ = DESKTOP_OVERLAY.set(desktop_overlay_path(app.handle()));
             let port = app_port();
             let state = app.state::<DshState>();
             // 记录内嵌加载页 URL（重启/切换模式时回到该页，像重启应用一样）
