@@ -1,7 +1,5 @@
 name: Release
 
-# 创建 GitHub Release + 上传资产需要 token 具备 contents: write（默认只读会报
-# "Resource not accessible by integration"）。
 permissions:
   contents: write
 
@@ -27,41 +25,61 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      # 官方 pnpm 安装 action；version 与 desktop/pnpm-lock.yaml 的 lockfileVersion 9.0 匹配。
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9
-
-      # cache: pnpm 由 setup-node 负责安装依赖并缓存 pnpm store（跨平台路径自动处理），
-      # 不再需要手动 npm install -g pnpm / actions/cache。
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: desktop/pnpm-lock.yaml
-
-      # 关键：tauri-action 自己不安装依赖——这里显式 pnpm install，否则后面
-      # `pnpm tauri build` 找不到 node_modules/.bin/tauri，会在几十秒内快速 exit 1
-      #（release 曾因此在双平台即刻失败；诊断工作流靠显式 install 才成功）。
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
         working-directory: desktop
-
       - name: Rust setup
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri -> target
-
-      # 依赖已由「Install frontend dependencies」装好；tauri-action 用 desktop 的
-      # @tauri-apps/cli（npm CLI，devDependency）执行 tauri build —— 无需 cargo install tauri-cli。
+      # 自动生成结构化 release notes：按提交类型归类，区间为上一个 v* tag..HEAD。
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          PREV=$(git tag --sort=-version:refname | grep -E '^v[0-9]' | sed -n '2p' || true)
+          if [ -n "$PREV" ]; then RANGE="$PREV..HEAD"; else RANGE="HEAD"; fi
+          : > /tmp/body.md
+          echo "## 本次更新（$RANGE）" >> /tmp/body.md
+          emit() {
+            local header="$1" pat="$2" inv="$3" lines
+            if [ "$inv" = 1 ]; then
+              lines=$(git log --no-merges --pretty=%s "$RANGE" | grep -vE "$pat" || true)
+            else
+              lines=$(git log --no-merges --pretty=%s "$RANGE" | grep -iE "$pat" || true)
+            fi
+            [ -z "$lines" ] && return 0
+            echo "" >> /tmp/body.md
+            echo "### $header" >> /tmp/body.md
+            while IFS= read -r l; do echo "- $l" >> /tmp/body.md; done <<< "$lines"
+          }
+          emit "🆕 新增" "^feat" 0
+          emit "🐛 修复" "^fix" 0
+          emit "⚡ 性能" "^perf" 0
+          emit "♻️ 重构 / 优化" "^(refactor|style)" 0
+          emit "🔧 工程 / CI / 文档" "^(ci|docs|chore|build|test)" 0
+          emit "📝 其他修改" "^(feat|fix|perf|refactor|style|ci|docs|chore|build|test)" 1
+          echo "" >> /tmp/body.md
+          echo "---" >> /tmp/body.md
+          echo "- **macOS** (Apple Silicon): .app + .dmg" >> /tmp/body.md
+          echo "- **Windows** (x86_64): .msi (WiX) + -setup.exe (NSIS)" >> /tmp/body.md
+          echo "body<<__EOF__" >> "$GITHUB_OUTPUT"
+          cat /tmp/body.md >> "$GITHUB_OUTPUT"
+          echo "__EOF__" >> "$GITHUB_OUTPUT"
       - name: Build & upload to release (tauri-action)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -70,11 +88,7 @@ jobs:
           projectPath: desktop
           tagName: ${{ github.ref_name }}
           releaseName: "DeepSeek Harness Desktop ${{ github.ref_name }}"
-          releaseBody: |
-            Tauri 2 desktop client for DeepSeek Harness.
-
-            - **macOS** (Apple Silicon): `DeepSeek Harness Desktop.app` + `.dmg`
-            - **Windows** (x86_64): `.msi` (WiX) + `-setup.exe` (NSIS)
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
