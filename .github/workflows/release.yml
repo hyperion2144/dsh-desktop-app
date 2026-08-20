@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 全量历史：结构化 release notes 需要上一个 tag..HEAD
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
