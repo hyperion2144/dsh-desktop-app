@@ -10,6 +10,9 @@ const STRIP_HEIGHT: Record<DesktopClientPlatform, number> = {
 /** macOS 折叠侧栏轨道目标宽度：容纳原生红绿灯（安全区约 80px）。 */
 const MACOS_COLLAPSED_SIDEBAR = 90
 
+/** stock ui-layout 折叠侧栏的内容轨道宽度（computeColumns 里 sidebar 折叠=56px）。 */
+const COLLAPSED_RAIL = 56
+
 /** Win/Linux 自绘窗口按钮预留宽度（CSS px）。 */
 const CAPTION_CONTROLS_WIDTH = 138
 
@@ -68,7 +71,8 @@ function locateLayout(): { frame: HTMLElement; sidebar: HTMLElement; center: HTM
  * 不动 ui-layout（不禁用、不接管 root、不提供 layout 服务），只在原生布局的
  * 局部放拖拽区与自绘窗口按钮：
  * - darwin：sidebar 顶部一条拖拽区（透明），并把 sidebar 内容下移对应高度；
- *   折叠时把侧栏网格轨道加宽到 90px，让原生红绿灯始终待在侧栏内部；
+ *   折叠时把侧栏网格轨道加宽到 90px（红绿灯始终在侧栏内），内部 56px 窄栏水平居中，
+ *   并禁用 frame 的慢速网格过渡（避免我们的覆盖与过渡互相重启导致折叠卡慢）；
  * - win32/linux：中间区域顶部一条自绘条（左侧拖拽区 + 右侧窗口按钮），
  *   中间列内容用 padding 顶下去，防止重叠。
  *
@@ -116,10 +120,19 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
     const sidebarWidth = sidebar.offsetWidth
 
     if (platform === 'darwin') {
+      const collapsed = frame.hasAttribute('data-sidebar-collapsed')
+      // 高级模式禁掉 stock 的慢速网格过渡：我们的 important 覆盖若与过渡并行，
+      // 每帧读「动画中间值」写回都会让 CSS 过渡重新开始，折叠会形同卡帧、非常慢。
+      // 直接禁用让宽度即时到位（对应 stock 拖拽时本来就 transition:none 的行为）。
+      frame.style.setProperty('transition', 'none', 'important')
       strip.style.cssText = `left:0;top:0;width:${sidebarWidth}px;height:${height}px;`
       drag.style.cssText = 'position:absolute;inset:0;'
       sidebar.style.paddingTop = `${height}px`
-      widenCollapsedRail(frame)
+      // 折叠：把内部 56px 窄栏水平居中在加宽到 90px 的轨道里（红绿灯所在列仍是侧栏）
+      const sidePad = collapsed ? (MACOS_COLLAPSED_SIDEBAR - COLLAPSED_RAIL) / 2 : 0
+      sidebar.style.paddingLeft = sidePad ? `${sidePad}px` : ''
+      sidebar.style.paddingRight = sidePad ? `${sidePad}px` : ''
+      if (collapsed) widenCollapsedRail(frame)
     } else {
       strip.style.cssText = `left:${sidebarWidth}px;right:0;top:0;height:${height}px;`
       drag.style.cssText = `position:absolute;top:0;bottom:0;left:0;right:${CAPTION_CONTROLS_WIDTH}px;`
@@ -128,10 +141,10 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
   }
 
   /**
-   * macOS：折叠时把 frame 首条网格轨道加宽到容纳红绿灯。AppFrame 每次重渲染
-   * 都会以非 important 覆写内联 grid-template-columns，这里用 important 叠加，
-   * 并在模板变化（折叠切换/侧栏拖宽）时经 observer 即时对齐；凭 computed 对比
-   * 避免写回死循环。
+   * macOS：折叠时把 frame 首条网格轨道加宽到容纳红绿灯，其余轨道沿用当前值。
+   * AppFrame 每次重渲染都会以非 important 覆写内联 grid-template-columns，这里用
+   * important 叠加；darwin 分支已禁用 frame 网格过渡，因此写入是即时且稳定的，
+   * 不会与过渡互相重启。凭 computed 对比避免写回死循环。
    */
   const widenCollapsedRail = (frame: HTMLElement) => {
     const collapsed = frame.hasAttribute('data-sidebar-collapsed')
