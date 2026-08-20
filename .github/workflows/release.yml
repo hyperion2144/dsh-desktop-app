@@ -69,11 +69,11 @@ jobs:
         with:
           projectPath: desktop
           tagName: ${{ github.ref_name }}
-          releaseName: "Deepseek Harness ${{ github.ref_name }}"
+          releaseName: "DeepSeek Harness Desktop ${{ github.ref_name }}"
           releaseBody: |
             Tauri 2 desktop client for DeepSeek Harness.
 
-            - **macOS** (Apple Silicon): `Deepseek Harness.app` + `.dmg`
+            - **macOS** (Apple Silicon): `DeepSeek Harness Desktop.app` + `.dmg`
             - **Windows** (x86_64): `.msi` (WiX) + `-setup.exe` (NSIS)
           releaseDraft: true
           prerelease: false

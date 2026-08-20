@@ -1,10 +1,10 @@
-# Deepseek Harness（dsh-desktop-app）
+# DeepSeek Harness Desktop（dsh-desktop-tauriapp）
 
 [![awesome · DSH plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
-[![npm](https://img.shields.io/npm/v/dsh-desktop-app)](https://www.npmjs.com/package/dsh-desktop-app)
+[![npm](https://img.shields.io/npm/v/dsh-desktop-tauriapp)](https://www.npmjs.com/package/dsh-desktop-tauriapp)
 
-> 主人好呀～ 这是 **Deepseek Harness** 桌面客户端仓库，把 DeepSeek Harness Web GUI 封装成 macOS/Windows 桌面应用。一键启动、托盘常驻、退出自动回收子进程。
-> 一键安装：`dsh plugin add dsh-desktop-app`（npm）或 `dsh plugin add github:happpsee/dsh-desktop-app`（GitHub），主人家的 agent 就学会「把 DSH 封装成桌面应用」的手艺了呢～
+> 主人好呀～ 这是 **DeepSeek Harness Desktop** 桌面客户端仓库，把 DeepSeek Harness Web GUI 封装成 macOS/Windows 桌面应用。一键启动、托盘常驻、退出自动回收子进程。
+> 一键安装：`dsh plugin add dsh-desktop-tauriapp`（npm）或 `dsh plugin add github:happpsee/dsh-desktop-tauriapp`（GitHub），主人家的 agent 就学会「把 DSH 封装成桌面应用」的手艺了呢～
 
 这个仓库把 DeepSeek Harness 做成桌面端（macOS + Windows 双平台），主要看点：
 
@@ -16,10 +16,10 @@
 
 ## 命名
 
-- 应用展示名：**Deepseek Harness**（与已安装的 `DeepSeek Harness.app` 保持一致）
-- 技术标识：ASCII 的 `dsh-desktop-app` / `dsh-desktop` / `com.arcreel.dsh-desktop`
+- 应用展示名：**DeepSeek Harness Desktop**（与已安装的 `DeepSeek Harness.app` 保持一致）
+- 技术标识：ASCII 的 `dsh-desktop-tauriapp` / `dsh-desktop-tauriapp` / `com.arcreel.dsh-desktop-tauriapp`
 - 应用图标：复用已安装的 `DeepSeek Harness.app` 的 `icon.icns`（保真度最高的 macOS icns）
-- 应用内左上角图标：保留 DSH Web GUI 原始样式；桌面 chrome（拖拽条/标题栏占位/窗口按钮）由内置 `dsh-desktop-app` 插件的 client 提供——应用启动时自动把插件挂进 web profile（走官方 `dsh plugin --profile web add`，幂等检测），窗口加载 URL 带 `dsh-desktop-mode=advanced&dsh-desktop-platform=<平台>` 标记，插件 client 借此接管 root slot 渲染拖拽区/标题栏；普通浏览器访问不激活、不受影响
+- 应用内左上角图标：保留 DSH Web GUI 原始样式；桌面 chrome（拖拽条/标题栏占位/窗口按钮）由内置 `dsh-desktop-tauriapp` 插件的 client 提供——应用启动时自动把插件挂进 web profile（走官方 `dsh plugin --profile web add`，幂等检测），窗口加载 URL 带 `dsh-desktop-tauriapp-mode=advanced&dsh-desktop-tauriapp-platform=<平台>` 标记，插件 client 借此接管 root slot 渲染拖拽区/标题栏；普通浏览器访问不激活、不受影响
 
 ## 特性
 
@@ -37,10 +37,10 @@
 - **进程回收**：只回收本次启动 spawn 的 dsh 子进程，stdout/stderr 落盘日志
 - **单实例**：重复双击聚焦已有窗口，不会拉起第二个服务
 - **窗口状态记忆**：位置与大小自动恢复
-- **桌面 chrome（插件式，参考 dsh-plugin-desktop 实现）**：由内置 `dsh-desktop-app` 插件 client（`src/client/`，构建产物 `lib/client.js`）接管 dsh web 的 root slot，按平台渲染——macOS `titleBarStyle: Overlay` 保留原生红绿灯 + sidebar 顶部空白拖拽区（`data-tauri-drag-region` 原生拖拽，`core:window` 权限经 remote capability 放行）；Windows/Linux 用 `decorations:false` 隐藏系统标题栏，client 自绘 caption 行 + 最小化/最大化/关闭按钮；布局/配色全部跟随主题 token（`--dsw-alias-bg-base` 等），无硬编码、可换主题；macOS Overlay 顶部原生标题栏材质属系统标准行为
-- **自动接线 web profile**：应用启动（需拉起 dsh 时）检测 `~/.dsh/profiles/web` 是否已挂 `dsh-desktop-app`，缺失则用官方 `dsh plugin --profile web add <spec>` 装入（幂等，代码内完成、不手工改配置）；`<spec>` 指向**内嵌在 app 内的插件副本**（见下条「内嵌插件跨平台路径」）；spawn 时带内置 overlay `--patch` 禁用 stock `ui-layout`，让桌面 root slot 接管布局，浏览器 GUI 不受影响
-- **内嵌插件跨平台路径**：`dsh-desktop-app` 打包时经 `bundle.resources` 内嵌进安装包——
-  macOS 落在 `Contents/Resources/dsh-desktop-app`、Windows 落在可执行文件所在安装目录、
+- **桌面 chrome（插件式，参考 dsh-plugin-desktop 实现）**：由内置 `dsh-desktop-tauriapp` 插件 client（`src/client/`，构建产物 `lib/client.js`）接管 dsh web 的 root slot，按平台渲染——macOS `titleBarStyle: Overlay` 保留原生红绿灯 + sidebar 顶部空白拖拽区（`data-tauri-drag-region` 原生拖拽，`core:window` 权限经 remote capability 放行）；Windows/Linux 用 `decorations:false` 隐藏系统标题栏，client 自绘 caption 行 + 最小化/最大化/关闭按钮；布局/配色全部跟随主题 token（`--dsw-alias-bg-base` 等），无硬编码、可换主题；macOS Overlay 顶部原生标题栏材质属系统标准行为
+- **自动接线 web profile**：应用启动（需拉起 dsh 时）检测 `~/.dsh/profiles/web` 是否已挂 `dsh-desktop-tauriapp`，缺失则用官方 `dsh plugin --profile web add <spec>` 装入（幂等，代码内完成、不手工改配置）；`<spec>` 指向**内嵌在 app 内的插件副本**（见下条「内嵌插件跨平台路径」）；spawn 时带内置 overlay `--patch` 禁用 stock `ui-layout`，让桌面 root slot 接管布局，浏览器 GUI 不受影响
+- **内嵌插件跨平台路径**：`dsh-desktop-tauriapp` 打包时经 `bundle.resources` 内嵌进安装包——
+  macOS 落在 `Contents/Resources/dsh-desktop-tauriapp`、Windows 落在可执行文件所在安装目录、
   Linux 落在 `/usr/lib/<应用>`（deb）或 AppImage 挂载点；运行时统一用 `app.path().resource_dir()`
   解析真实位置，安装目录不在 /Applications 也不受影响。
 - **鲸鱼娘桌宠**：透明置顶无边框小窗，纯 CSS 呼吸/漂浮动画 + 椭圆阴影；拖拽移动
@@ -77,7 +77,7 @@ docs/      Windows 实测审计报告与构建笔记
 
 1. 确保已装 dsh：`npm i -g @deepseek-ai/dsh`
 2. 从 [Releases](../../releases) 下载 `Deepseek-Harness_*.dmg`，拖入应用程序
-3. 双击「Deepseek Harness」；托盘菜单可退出
+3. 双击「DeepSeek Harness Desktop」；托盘菜单可退出
 
 ### 从源码构建
 
@@ -92,8 +92,8 @@ pnpm tauri build   # macOS 出 .app/.dmg；Windows 出 .msi/.exe
 ### 作为技能使用
 
 ```bash
-cp -r skill ~/.claude/skills/dsh-desktop-app   # Claude Code / Claude Agent
-# DSH：复制到所运行 profile 的 skills 目录后加载 dsh-desktop-app 技能
+cp -r skill ~/.claude/skills/dsh-desktop-tauriapp   # Claude Code / Claude Agent
+# DSH：复制到所运行 profile 的 skills 目录后加载 dsh-desktop-tauriapp 技能
 ```
 
 ## 平台实测状态

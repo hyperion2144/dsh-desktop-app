@@ -17,7 +17,7 @@ import { SIDEBAR_COLLAPSED } from './layout-state.ts'
  */
 const ADVANCED_STYLES = `
 html, body, #root { width: 100%; height: 100%; }
-body[data-dsh-desktop-mode="advanced"] { margin: 0; }
+body[data-dsh-desktop-tauriapp-mode="advanced"] { margin: 0; }
 .dshDesktopFrame { position: relative; display: grid; grid-template-rows: 100%; width: 100%; height: 100%; overflow: hidden; background: var(--dsw-alias-bg-base); }
 /* 侧栏 surface 用侧栏填充色而非透明：避免 Tauri Overlay 标题栏区域的 webview
    透明像素透出到桌面（参考项目的 Electron 有 vibrancy 玻璃衬底，我们用实心色）。 */
@@ -67,8 +67,8 @@ body[data-dsh-desktop-mode="advanced"] { margin: 0; }
 /** Install and remove the advanced shell's global native-window styles. @returns the style disposer. */
 export function installAdvancedStyles(): () => void {
   const style = document.createElement('style')
-  style.dataset.plugin = 'dsh-desktop-app'
-  style.dataset.pluginCss = 'dsh-desktop-app/advanced-shell'
+  style.dataset.plugin = 'dsh-desktop-tauriapp'
+  style.dataset.pluginCss = 'dsh-desktop-tauriapp/advanced-shell'
   style.textContent = ADVANCED_STYLES
   document.head.appendChild(style)
   return () => { style.remove() }

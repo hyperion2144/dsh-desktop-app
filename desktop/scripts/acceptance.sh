@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Deepseek Harness · macOS 验收脚本（三条路径，源自实测验收清单）
+# DeepSeek Harness Desktop · macOS 验收脚本（三条路径，源自实测验收清单）
 # 用法：./scripts/acceptance.sh [binary] [port] [app_binary]
-# 默认 binary=target/debug/dsh-desktop，port=3080，
-# app_binary=src-tauri/target/release/bundle/macos/Deepseek Harness.app/Contents/MacOS/dsh-desktop
+# 默认 binary=target/debug/dsh-desktop-tauriapp，port=3080，
+# app_binary=src-tauri/target/release/bundle/macos/DeepSeek Harness Desktop.app/Contents/MacOS/dsh-desktop-tauriapp
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BIN="${1:-target/debug/dsh-desktop}"
+BIN="${1:-target/debug/dsh-desktop-tauriapp}"
 PORT="${2:-3080}"
-APP_BIN="${3:-src-tauri/target/release/bundle/macos/Deepseek Harness.app/Contents/MacOS/dsh-desktop}"
+APP_BIN="${3:-src-tauri/target/release/bundle/macos/DeepSeek Harness Desktop.app/Contents/MacOS/dsh-desktop-tauriapp}"
 
 # 单实例锁检查：同 identifier 实例在跑时，验收进程会被静默转交并立即退出
 #（exit 0 但零输出，造成假通过——必须前置检测）
-if pgrep -q -f "dsh-desktop"; then
-  echo "检测到已有 dsh-desktop 实例在运行，单实例锁会拦截验收进程。"
-  echo "请先从托盘菜单退出 Deepseek Harness（Cmd+Q 只是隐藏），再运行本脚本。"
+if pgrep -q -f "dsh-desktop-tauriapp"; then
+  echo "检测到已有 dsh-desktop-tauriapp 实例在运行，单实例锁会拦截验收进程。"
+  echo "请先从托盘菜单退出 DeepSeek Harness Desktop（Cmd+Q 只是隐藏），再运行本脚本。"
   exit 2
 fi
 

@@ -1,15 +1,15 @@
-// dsh-desktop-app bundle：注册「DSH 桌面壳」技能（SKILL.md 正文内联）。
+// dsh-desktop-tauriapp bundle：注册「DSH 桌面壳」技能（SKILL.md 正文内联）。
 // 完整参考实现（Rust 源码、脚本、审计报告）在 GitHub 仓库：
-// https://github.com/happpsee/dsh-desktop-app
+// https://github.com/happpsee/dsh-desktop-tauriapp
 
-export const name = 'dsh-desktop-app'
+export const name = 'dsh-desktop-tauriapp'
 
 const CONTENT = [
-  '# DSH 桌面壳「小南梁」',
+  '# DSH 桌面壳「DeepSeek Harness Desktop Desktop」',
   '',
   '把 DeepSeek Harness Web GUI 封装成 Tauri 2 桌面应用（macOS + Windows 双平台）：',
   '双击启动 → 自动拉起本地 `dsh web` → 窗口加载 Web GUI → 托盘常驻 → 退出回收子进程。',
-  '完整源码与脚本见 https://github.com/happpsee/dsh-desktop-app （desktop/ 源码、skill/ 技能包、docs/ 审计报告）。',
+  '完整源码与脚本见 https://github.com/happpsee/dsh-desktop-tauriapp （desktop/ 源码、skill/ 技能包、docs/ 审计报告）。',
   '',
   '## 一、安装 DeepSeek Harness（前提，分平台）',
   '',
@@ -40,8 +40,8 @@ const CONTENT = [
   '## 四、项目骨架（Tauri 2）',
   '',
   '```bash',
-  'npm create tauri-app@latest desktop -- --name dsh-desktop \\',
-  '  --identifier com.arcreel.dsh-desktop --template vanilla --manager pnpm --yes',
+  'npm create tauri-app@latest desktop -- --name dsh-desktop-tauriapp \\',
+  '  --identifier com.arcreel.dsh-desktop-tauriapp --template vanilla --manager pnpm --yes',
   '```',
   '核心 Rust（desktop/src-tauri/src/lib.rs，仓库有完整参考）：',
   '- 状态 DshState：child/spawned_this_run/spawn_failed/quitting/tray_tip_shown/unread',
@@ -64,13 +64,13 @@ const CONTENT = [
   '`pnpm tauri build`（mac 出 .app/.dmg，win 出 .msi/-setup.exe）。',
   '仓库 desktop/scripts/acceptance.sh / .ps1 自动跑三条路径：A 复用（3080 已有 dsh web，降级接入、退出不杀）、',
   'B 拉起+回收（端口空闲 spawn，退出 kill+端口释放）、C 受限 PATH（模拟双击，验证兜底探测）。',
-  '**跑验收前先退出所有 dsh-desktop 实例**（单实例锁会静默拦截造成假通过）。',
+  '**跑验收前先退出所有 dsh-desktop-tauriapp 实例**（单实例锁会静默拦截造成假通过）。',
   '',
   '## 六、已知坑',
   '',
   '- 中文 productName 必须配 `bundle.windows.wix.language: "zh-CN"`，否则 MSI 打包 LGHT0311',
   '- SmartScreen 只针对网络下载带 MOTW 的 exe，本地构建不触发',
-  '- 产物 exe 名是 crate 名 dsh-desktop.exe（非「小南梁.exe」）',
+  '- 产物 exe 名是 crate 名 dsh-desktop-tauriapp.exe（非「DeepSeek Harness Desktop Desktop.exe」）',
   '- tauri icon 不生成 256x256.png，用 128x128@2x.png',
   '- mac dmg 打包失败留 rw 挂载：hdiutil detach 后删 bundle/macos/rw.*.dmg 再全量 build',
   '- PowerShell 5.1 读 UTF-8 日志：`[IO.File]::ReadAllText($p,[Text.Encoding]::UTF8)`',
@@ -78,27 +78,27 @@ const CONTENT = [
   '## 七、桌面端与会话的关系',
   '',
   '桌面壳与浏览器/终端共用同一个 dsh web（单实例、同后端、同会话存储 ~/.dsh）；由桌面壳拉起的实例带桌面 overlay 启用桌面 chrome，复用的外部实例降级接入；托盘「重启 dsh 服务」可切换到桌面壳实例。避免两边同时操作同一会话。',
-  '完整 SKILL.md 与实测审计见仓库 https://github.com/happpsee/dsh-desktop-app',
+  '完整 SKILL.md 与实测审计见仓库 https://github.com/happpsee/dsh-desktop-tauriapp',
 ].join('\n')
 
 export function apply(ctx) {
   const skills = ctx.get('skills')
   if (skills === undefined || typeof skills.register !== 'function') {
-    ctx.logger?.warn('dsh-desktop-app: skills 服务不可用，跳过注册')
+    ctx.logger?.warn('dsh-desktop-tauriapp: skills 服务不可用，跳过注册')
     return
   }
   ctx.effect(() =>
     skills.register({
-      name: 'dsh-desktop-app',
-      title: 'DSH 桌面壳「小南梁」',
+      name: 'dsh-desktop-tauriapp',
+      title: 'DSH 桌面壳「DeepSeek Harness Desktop Desktop」',
       description:
         '把 DeepSeek Harness Web GUI 封装成 Tauri 2 桌面应用（macOS + Windows 双平台），含托盘常驻、单实例、子进程生命周期、任务完成通知、鲸鱼娘透明置顶桌宠；内置 DSH 安装分平台、国内镜像加速（rustup/cargo/npm/GitHub/NSIS）、subagent 哨兵下载判定、Windows 无管理员工具链方案。当用户想把 DSH 做成桌面应用、搭 Tauri 项目、或在 Windows 新环境配置 Rust/Node 工具链时使用。',
       whenToUse:
         '用户想把 DeepSeek Harness 或任意本地 Web 应用封装成桌面应用；需要给桌面应用加托盘常驻、任务完成系统通知、透明置顶桌宠；需要在 Windows 新环境配置 Rust/Node 工具链（含国内镜像加速）；需要无管理员权限构建 Tauri 项目；遇到 dmg/MSI 打包、SmartScreen、单实例锁等桌面壳坑时。',
-      source: 'dsh-desktop-app',
+      source: 'dsh-desktop-tauriapp',
       content: CONTENT,
       invocation: { modelInvocable: true, userInvocable: true },
     }),
-    'dsh-desktop-app: skill',
+    'dsh-desktop-tauriapp: skill',
   )
 }

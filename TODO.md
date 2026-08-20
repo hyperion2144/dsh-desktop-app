@@ -41,7 +41,7 @@
       cordis.patch.yml + package.json dsh.bundle），npm 发布 0.3.0，awesome-dsh-plugin
       收录（PR #695 已合并，dsh-market 自动聚合）
 - [x] **插件市场机会盘点**：docs/plugin-market-desktop-opportunities.md（审批/提问
-      通知、截图问小南梁、托盘状态中心、预定任务+防睡眠、通知气泡等，含完整对照表）
+      通知、截图问DeepSeek Harness Desktop Desktop、托盘状态中心、预定任务+防睡眠、通知气泡等，含完整对照表）
 - [ ] **中文技术社区文章**：《把 DeepSeek Harness 包成桌面应用》实操文
       （掘金/知乎/B 站），挂仓库链接
 - [x] **图像理解接入**：dsh-vision-router 插件已安装并验证（页面注入 ✓，视觉工具

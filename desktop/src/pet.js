@@ -1,4 +1,4 @@
-// Deepseek Harness 桌宠：JS 手动拖拽（点击/拖拽分离）+ 右键菜单 + 气泡 + 穿透开关
+// DeepSeek Harness Desktop 桌宠：JS 手动拖拽（点击/拖拽分离）+ 右键菜单 + 气泡 + 穿透开关
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const { getCurrentWindow } = window.__TAURI__.window;

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Deepseek Harness",
+  "productName": "DeepSeek Harness Desktop",
   "version": "0.5.3",
-  "identifier": "com.arcreel.dsh-desktop",
+  "identifier": "com.arcreel.dsh-desktop-tauriapp",
   "build": {
     "frontendDist": "../src"
   },
@@ -23,7 +23,7 @@
       {
         "label": "pet",
         "url": "pet.html",
-        "title": "Deepseek Harness 桌宠",
+        "title": "DeepSeek Harness Desktop 桌宠",
         "width": 260,
         "height": 300,
         "resizable": false,
@@ -50,7 +50,7 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
-    "shortDescription": "Deepseek Harness —— DeepSeek Harness 桌面客户端",
+    "shortDescription": "DeepSeek Harness Desktop —— DeepSeek Harness 桌面客户端",
     "longDescription": "一键启动 DeepSeek Harness Web GUI 的桌面壳：自动拉起本地服务、托盘常驻、退出自动清理。",
     "macOS": {
       "minimumSystemVersion": "10.15"
@@ -68,7 +68,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "embedded/dsh-desktop-app": "dsh-desktop-app/"
+      "embedded/dsh-desktop-tauriapp": "plugins/dsh-desktop-tauriapp/"
     }
   }
 }

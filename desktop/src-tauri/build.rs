@@ -1,6 +1,6 @@
-// 在 tauri_build::build() 之前把 dsh-desktop-app 插件包内嵌到
-// src-tauri/embedded/dsh-desktop-app（作为 bundle.resources 的源目录，随后被打进
-// .app 的 Contents/Resources/dsh-desktop-app）。这样打包场景下 desktop_plugin_dir()
+// 在 tauri_build::build() 之前把 dsh-desktop-tauriapp 插件包内嵌到
+// src-tauri/embedded/dsh-desktop-tauriapp（作为 bundle.resources 的源目录，随后被打进
+// .app 的 Contents/Resources/dsh-desktop-tauriapp）。这样打包场景下 desktop_plugin_dir()
 // 能通过 Tauri resource_dir() 找到内嵌副本，不依赖开发仓库路径。
 // 用 CARGO_MANIFEST_DIR 定位仓库根，与执行时的 cwd 无关。
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ fn main() {
 
 fn stage_embedded_plugin() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    // src-tauri -> desktop -> 仓库根（package.json.name == dsh-desktop-app）
+    // src-tauri -> desktop -> 仓库根（package.json.name == dsh-desktop-tauriapp）
     let repo_root = match (manifest.parent(), manifest.parent().and_then(|p| p.parent())) {
         (Some(_d), Some(r)) => r.to_path_buf(),
         _ => {
@@ -20,7 +20,7 @@ fn stage_embedded_plugin() {
             return;
         }
     };
-    let dest = manifest.join("embedded").join("dsh-desktop-app");
+    let dest = manifest.join("embedded").join("dsh-desktop-tauriapp");
     let _ = std::fs::remove_dir_all(&dest);
     if let Err(e) = std::fs::create_dir_all(&dest) {
         println!("cargo:warning=embed-plugin: 创建内嵌目录失败：{e}");

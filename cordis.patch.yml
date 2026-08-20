@@ -1,5 +1,5 @@
-# dsh-desktop-app bundle layer：安装时自动挂载插件行（提供「DSH 桌面壳」技能）。
+# dsh-desktop-tauriapp bundle layer：安装时自动挂载插件行（提供「DSH 桌面壳」技能）。
 # 后置层（profile 自身 cordis.patch.yml、--patch 覆盖）可按 id 覆写本行。
 - insert:
-    - id: dsh-desktop-app
-      name: dsh-desktop-app
+    - id: dsh-desktop-tauriapp
+      name: dsh-desktop-tauriapp

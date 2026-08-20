@@ -3,12 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>启动失败 · 小南梁</title>
+    <title>启动失败 · DeepSeek Harness Desktop Desktop</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main class="boot">
-      <img class="logo-img" src="icon.png" alt="小南梁" />
+      <img class="logo-img" src="icon.png" alt="DeepSeek Harness Desktop Desktop" />
       <h1>启动失败</h1>
       <p id="reason" class="status">未知错误，请查看日志。</p>
       <div class="hints">
@@ -19,13 +19,13 @@
     <script>
       const isWin = /Win/.test(navigator.platform);
       document.getElementById("log-dir").textContent = isWin
-        ? "日志目录：%LOCALAPPDATA%\\com.arcreel.dsh-desktop\\logs\\"
-        : "日志目录：~/Library/Logs/com.arcreel.dsh-desktop/";
+        ? "日志目录：%LOCALAPPDATA%\\com.arcreel.dsh-desktop-tauriapp\\logs\\"
+        : "日志目录：~/Library/Logs/com.arcreel.dsh-desktop-tauriapp/";
       const reason = new URLSearchParams(location.search).get("reason");
       const map = {
         "not-found":
           "未找到 dsh 命令。请先在终端执行 npm i -g @deepseek-ai/dsh，或设置 DSH_BIN 环境变量指向 dsh 可执行文件。",
-        "spawn-failed": "dsh 进程启动失败，请查看日志目录中的 dsh-desktop.log。",
+        "spawn-failed": "dsh 进程启动失败，请查看日志目录中的 dsh-desktop-tauriapp.log。",
         "timeout": "等待本地服务就绪超时（60 秒），请查看日志并重试。",
       };
       document.getElementById("reason").textContent =

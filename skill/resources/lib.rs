@@ -403,7 +403,7 @@ fn spawn_dsh(port: u16) -> Result<Child, SpawnError> {
 }
 
 /// 生成替换左上角品牌的 CSS：隐藏官方 wordmark 与鱼 logo（均为 svg），
-/// 改为鲸鱼娘图标 + 「小南梁」文字。尺寸对齐原版 24px 高度基准
+/// 改为鲸鱼娘图标 + 「DeepSeek Harness Desktop Desktop」文字。尺寸对齐原版 24px 高度基准
 /// （图标 24px、文字 17px/600/行高 24px、间距 8px）；图标用 128px 高清
 /// 源图 base64，避免 Retina 下发糊。选择器用 [class*="brand"] 通配，
 /// 避免被编译哈希类名（hHd-Xa_brand）的版本变化影响。
@@ -412,7 +412,7 @@ fn brand_css() -> String {
     let png = include_bytes!("../icons/128x128.png");
     let b64 = base64::engine::general_purpose::STANDARD.encode(png);
     format!(
-        r#"[class*="brand"] svg{{display:none !important}}[class*="brand"]{{display:inline-flex !important;align-items:center !important;gap:8px !important}}[class*="brand"]::before{{content:"";width:40px;height:40px;flex:none;display:inline-block;background:url("data:image/png;base64,{b64}") center/contain no-repeat;border-radius:8px}}[class*="brand"]::after{{content:"小南梁";font-size:17px;font-weight:600;line-height:24px;letter-spacing:.02em;white-space:nowrap}}[class*="railFish"]{{display:none !important}}"#
+        r#"[class*="brand"] svg{{display:none !important}}[class*="brand"]{{display:inline-flex !important;align-items:center !important;gap:8px !important}}[class*="brand"]::before{{content:"";width:40px;height:40px;flex:none;display:inline-block;background:url("data:image/png;base64,{b64}") center/contain no-repeat;border-radius:8px}}[class*="brand"]::after{{content:"DeepSeek Harness Desktop Desktop";font-size:17px;font-weight:600;line-height:24px;letter-spacing:.02em;white-space:nowrap}}[class*="railFish"]{{display:none !important}}"#
     )
 }
 
@@ -429,7 +429,7 @@ fn inject_brand(app: AppHandle) {
             if let Err(e) = w.eval(&script) {
                 log::warn!("品牌样式注入失败：{e}");
             } else {
-                log::info!("小南梁品牌样式已注入（左上角 logo 与名称已替换）");
+                log::info!("DeepSeek Harness Desktop Desktop品牌样式已注入（左上角 logo 与名称已替换）");
             }
         }
     });
@@ -549,7 +549,7 @@ fn notify_completed(app: &AppHandle, body: &str) {
             let _ = app
                 .notification()
                 .builder()
-                .title("小南梁 · 任务完成")
+                .title("DeepSeek Harness Desktop Desktop · 任务完成")
                 .body(body)
                 .show();
             let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
@@ -674,7 +674,7 @@ fn show_error(app: &AppHandle, reason: &str) {
     let _ = app
         .notification()
         .builder()
-        .title("小南梁 启动失败")
+        .title("DeepSeek Harness Desktop Desktop 启动失败")
         .body(body)
         .show();
 }
@@ -817,7 +817,7 @@ fn pet_toggle_passthrough(app: AppHandle) -> bool {
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let pet = MenuItem::with_id(app, "pet", "显示/隐藏桌宠", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出小南梁", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出DeepSeek Harness Desktop Desktop", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &pet, &quit])?;
     TrayIconBuilder::with_id("dsh-tray")
         .icon(
@@ -825,7 +825,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 .expect("缺少应用图标")
                 .clone(),
         )
-        .tooltip("小南梁")
+        .tooltip("DeepSeek Harness Desktop Desktop")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -859,7 +859,7 @@ pub fn run() {
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::LogDir {
-                        file_name: Some("dsh-desktop".into()),
+                        file_name: Some("dsh-desktop-tauriapp".into()),
                     }),
                 ])
                 .level(log::LevelFilter::Info)
@@ -994,7 +994,7 @@ pub fn run() {
                                 .app_handle()
                                 .notification()
                                 .builder()
-                                .title("小南梁 仍在运行")
+                                .title("DeepSeek Harness Desktop Desktop 仍在运行")
                                 .body("窗口已隐藏到菜单栏托盘，点击托盘图标可重新打开；托盘菜单可退出。")
                                 .show();
                         }
@@ -1070,7 +1070,7 @@ mod tests {
     #[test]
     fn brand_css_contains_brand_and_icon() {
         let css = brand_css();
-        assert!(css.contains("小南梁"), "品牌 CSS 应含应用名");
+        assert!(css.contains("DeepSeek Harness Desktop Desktop"), "品牌 CSS 应含应用名");
         assert!(css.contains("data:image/png;base64,"), "品牌 CSS 应内嵌图标");
         assert!(css.contains("brand"), "应命中品牌选择器");
     }

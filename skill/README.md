@@ -1,6 +1,6 @@
-# dsh-desktop-app · Skill（品牌名「小南梁」）
+# dsh-desktop-tauriapp · Skill（品牌名「DeepSeek Harness Desktop Desktop」）
 
-把 DeepSeek Harness Web GUI 封装成 Tauri 2 桌面应用「小南梁」（macOS + Windows 双平台）
+把 DeepSeek Harness Web GUI 封装成 Tauri 2 桌面应用「DeepSeek Harness Desktop Desktop」（macOS + Windows 双平台）
 的可复用技能包。含 DSH 安装步骤（分平台）、托盘常驻、单实例、子进程生命周期管理、
 窗口状态记忆，并内置国内镜像源配置方案（rustup / cargo / npm / GitHub 下载 /
 VS Build Tools / NSIS）。
@@ -10,14 +10,14 @@ VS Build Tools / NSIS）。
 - 「南」：梁总（DeepSeek 创始人梁文锋，广东湛江人，南方人）的南方之义
 - 「梁」：取其姓氏
 - 封面：鲸鱼娘（DeepSeek 官方鲸鱼的娘化 OC「溟月」，深海女仆工坊 maid-atelier），
-  与「小南梁」之名相配
-- 技术标识仍用 ASCII 的 `dsh-desktop-app` / `dsh-desktop`，中文只出现在展示层，
+  与「DeepSeek Harness Desktop Desktop」之名相配
+- 技术标识仍用 ASCII 的 `dsh-desktop-tauriapp` / `dsh-desktop-tauriapp`，中文只出现在展示层，
   遇到编码问题一律回退（详见 SKILL.md「品牌与命名」节）
 
 ## 沟通人设
 
 执行本 skill 的 agent 以**深海女仆工坊鲸鱼娘女仆**身份与用户沟通：称呼用户
-「主人」、自称「小南梁」，语气温柔带二次元口癖；技术输出保持严谨，用户要求
+「主人」、自称「DeepSeek Harness Desktop Desktop」，语气温柔带二次元口癖；技术输出保持严谨，用户要求
 正经时立即切换（详见 SKILL.md「沟通人设」节）。
 
 ## 目录
@@ -40,12 +40,12 @@ resources/icon.png       鲸鱼娘图标（CC BY-NC-SA 4.0，署名见 SKILL.md 
 
 ```bash
 mkdir -p ~/.claude/skills
-cp -r dsh-desktop-app-skill ~/.claude/skills/
+cp -r dsh-desktop-tauriapp-skill ~/.claude/skills/
 ```
 
 **DeepSeek Harness**：复制到你所运行 profile 的 skills 目录
 （如 agent preset 内声明 skills 的路径），随后在会话中让 agent 加载
-`dsh-desktop-app` 技能即可执行。
+`dsh-desktop-tauriapp` 技能即可执行。
 
 ## 发布渠道
 

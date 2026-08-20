@@ -15,7 +15,7 @@ import { DesktopThemePresenter } from './theme-presenter.ts'
  */
 export function applyAdvancedShell(ctx: ClientContext, environment: DesktopClientEnvironment): void {
   if (environment.mode !== 'advanced') {
-    throw new Error(`dsh-desktop-app: advanced shell received mode ${JSON.stringify(environment.mode)}`)
+    throw new Error(`dsh-desktop-tauriapp: advanced shell received mode ${JSON.stringify(environment.mode)}`)
   }
 
   const desktopLayout = new DesktopLayoutState()

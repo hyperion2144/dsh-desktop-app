@@ -1,7 +1,7 @@
-# 小南梁 · Windows 验收脚本（三条路径，源自实测验收清单）
-# 用法：.\scripts\acceptance.ps1 [-Bin target\debug\dsh-desktop.exe] [-Port 3080]
+# DeepSeek Harness Desktop Desktop · Windows 验收脚本（三条路径，源自实测验收清单）
+# 用法：.\scripts\acceptance.ps1 [-Bin target\debug\dsh-desktop-tauriapp.exe] [-Port 3080]
 param(
-    [string]$Bin = "target\debug\dsh-desktop.exe",
+    [string]$Bin = "target\debug\dsh-desktop-tauriapp.exe",
     [int]$Port = 3080
 )
 $ErrorActionPreference = "Stop"
@@ -46,8 +46,8 @@ if ($left) { Write-Host "FAIL: 端口 $next 未回收"; exit 1 }
 Write-Host "端口 $next 已回收 ✓"
 Remove-Item Env:\DSH_DESKTOP_PORT, Env:\DSH_DESKTOP_AUTO_QUIT
 
-# C GUI 启动场景（受限 PATH；release 为 GUI 子系统，用 dsh-desktop.exe 本体）
-$releaseExe = "src-tauri\target\release\dsh-desktop.exe"
+# C GUI 启动场景（受限 PATH；release 为 GUI 子系统，用 dsh-desktop-tauriapp.exe 本体）
+$releaseExe = "src-tauri\target\release\dsh-desktop-tauriapp.exe"
 if (Test-Path $releaseExe) {
     $next2 = $Port + 2
     $env:PATH = "$env:SystemRoot\system32;$env:SystemRoot"

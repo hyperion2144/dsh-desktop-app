@@ -18,7 +18,7 @@ export const inject = [
 
 /**
  * 桌面壳 client 入口：仅在桌面 shell 的 webview URL 携带
- * `dsh-desktop-mode=advanced&dsh-desktop-platform=<platform>` 时激活高级布局。
+ * `dsh-desktop-tauriapp-mode=advanced&dsh-desktop-tauriapp-platform=<platform>` 时激活高级布局。
  * 普通浏览器访问（无 query 标记）时不做任何改动。
  * @param ctx - browser Cordis context.
  */

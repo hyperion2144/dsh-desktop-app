@@ -1,6 +1,6 @@
-# dsh-desktop-app skill · Windows 实测审计报告
+# dsh-desktop-tauriapp skill · Windows 实测审计报告
 
-审计对象：`C:\Users\zxy\Desktop\dsh-desktop-app-skill\dsh-desktop-app-skill`
+审计对象：`C:\Users\zxy\Desktop\dsh-desktop-tauriapp-skill\dsh-desktop-tauriapp-skill`
 审计方式：在本机（Win11，无管理员权限，无 VS Build Tools）逐条实测/复现，
 全部结论基于下方引用的实测输出原文。
 
@@ -94,9 +94,9 @@ vswhere NOT FOUND at C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs
 
 ## F. 打包与分发（skill 第六章/第七章）
 
-1. 产物：`msi/小南梁_0.2.1_x64_zh-CN.msi` **3.35MB**、`nsis/小南梁_0.2.1_x64-setup.exe` **2.23MB**。release 编译 4m49s（首次）/ 1m19s（增量）。
+1. 产物：`msi/DeepSeek Harness Desktop Desktop_0.2.1_x64_zh-CN.msi` **3.35MB**、`nsis/DeepSeek Harness Desktop Desktop_0.2.1_x64-setup.exe` **2.23MB**。release 编译 4m49s（首次）/ 1m19s（增量）。
 2. **skill 自己的 tauri.conf.json 缺 `bundle.windows.wix.language = "zh-CN"`** → 按 skill 第六章 `pnpm tauri build`（targets:all）在中文 productName 下 **MSI 步骤必失败**（实测 `light.exe` 退出、复现输出 `error LGHT0311: ... characters that are not available in the specified database code page '1252'`）。加上 `"windows": {"wix": {"language": "zh-CN"}}` 后成功。
-3. NSIS 安装器：`/S` 静默安装 **exit 0、免管理员（currentUser）**，装到 `%LOCALAPPDATA%\小南梁\`（`dsh-desktop.exe` + `uninstall.exe`），开始菜单自动建「小南梁.lnk」；**桌面快捷方式不会自动建**（实测用 WScript.Shell COM 手动创建成功）。**注意 skill 第六章 C 验收写的 `& "<bundle>\小南梁.exe"` 与实际不符：产物 exe 名是 `dsh-desktop.exe`**（crate 名），不存在「小南梁.exe」。
+3. NSIS 安装器：`/S` 静默安装 **exit 0、免管理员（currentUser）**，装到 `%LOCALAPPDATA%\DeepSeek Harness Desktop Desktop\`（`dsh-desktop-tauriapp.exe` + `uninstall.exe`），开始菜单自动建「DeepSeek Harness Desktop Desktop.lnk」；**桌面快捷方式不会自动建**（实测用 WScript.Shell COM 手动创建成功）。**注意 skill 第六章 C 验收写的 `& "<bundle>\DeepSeek Harness Desktop Desktop.exe"` 与实际不符：产物 exe 名是 `dsh-desktop-tauriapp.exe`**（crate 名），不存在「DeepSeek Harness Desktop Desktop.exe」。
 4. SmartScreen：本机本地构建的 exe（无 MOTW 网络标记）直接运行/安装**未触发任何 SmartScreen 提示**。skill「未签名 exe 首跑弹蓝色警告」**不准确**：SmartScreen 只针对「从网络下载带 MOTW 的文件」；本地产物不会触发。
 5. 双击场景：安装后的 exe 烟测（AUTO_QUIT）正常复用 3080、exit 0 ✓。
 
@@ -104,8 +104,8 @@ vswhere NOT FOUND at C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs
 
 1. 关闭按钮隐藏/托盘左键右键/溢出区/首次通知：**无头环境无法点击验证**（代码路径存在：CloseRequested prevent+hide、TrayIconBuilder 左键 show）。诚实标注为「未实测」。
 2. 单实例：起第二个实例实测 **0.1s 即退出（exit 0）**，第一实例继续运行 ✓。
-3. 窗口状态记忆：`%APPDATA%\com.arcreel.dsh-desktop\.window-state.json`（0.2KB）实测存在 ✓。
-4. 日志文件：`%LOCALAPPDATA%\com.arcreel.dsh-desktop\logs\dsh-desktop.log` ✓ 与 skill 一致。
+3. 窗口状态记忆：`%APPDATA%\com.arcreel.dsh-desktop-tauriapp\.window-state.json`（0.2KB）实测存在 ✓。
+4. 日志文件：`%LOCALAPPDATA%\com.arcreel.dsh-desktop-tauriapp\logs\dsh-desktop-tauriapp.log` ✓ 与 skill 一致。
 
 ---
 
@@ -124,7 +124,7 @@ vswhere NOT FOUND at C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs
 11. **四章（tauri.conf.json）** · 补 `"bundle": {"windows": {"wix": {"language": "zh-CN"}}}` → 实测缺省 en-US（codepage 1252）在中文 productName 下 `light.exe` 报 LGHT0311，MSI 必失败。
 12. **七章** · 「Windows 分支未经 macOS 交叉验证：Windows 上首次编译若报错按编译器提示修正」→ 改为「已实测：x86_64-pc-windows-msvc 下 `cargo check` 通过（仅 unused import `Path` 一条警告）」→ 实测 exit=0，1m40s。
 13. **七章** · 「未签名 exe 首跑弹蓝色警告」→ 改为「仅**网络下载带 MOTW** 的未签名 exe 才触发 SmartScreen；本地构建/本机安装不触发」→ 实测本地 exe 与 setup.exe 运行安装均无提示。
-14. **六章** · win 验收 C 命令 `& "<bundle>\小南梁.exe"` → 改为 `& "$env:LOCALAPPDATA\小南梁\dsh-desktop.exe"`（安装产物）或 `<release>\dsh-desktop.exe` → 实测产物 exe 名是 crate 名 `dsh-desktop.exe`，不存在「小南梁.exe」。
+14. **六章** · win 验收 C 命令 `& "<bundle>\DeepSeek Harness Desktop Desktop.exe"` → 改为 `& "$env:LOCALAPPDATA\DeepSeek Harness Desktop Desktop\dsh-desktop-tauriapp.exe"`（安装产物）或 `<release>\dsh-desktop-tauriapp.exe` → 实测产物 exe 名是 crate 名 `dsh-desktop-tauriapp.exe`，不存在「DeepSeek Harness Desktop Desktop.exe」。
 15. **一章 Windows 节** · 补「首次 `dsh web`：约 4s 就绪，stdout 单行 `dsh web: http://127.0.0.1:<port>`，stderr 空」；补「PowerShell 5.1 读 UTF-8 日志：`[IO.File]::ReadAllText($p,[Text.Encoding]::UTF8)`（默认 GBK 显示乱码）」→ 实测 4.0s / 单行输出 / chcp=936 下 Get-Content 乱码。
 16. **一章 Windows 节** · nvm-windows 主路径 → 增加「官方安装器装任意盘符（如 D:\node）+ 确认 node.exe 在 PATH」作为等价第一路径 → 实测本机即此形态，且 find_node 的 PATH 探测可命中。
 17. **五章** · 「复制 icons/256x256.png 为 src/icon.png」→ 改为「tauri icon 不生成 256x256.png（实测生成 128x128@2x.png 即 256 像素 + 512 的 icon.png）；用 128x128@2x.png 或 Pillow 直接生成 256x256」→ 实测 tauri icon 2.11.4 输出清单无 256x256.png。
@@ -139,4 +139,4 @@ vswhere NOT FOUND at C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs
 **可用度：7 / 10。**
 
 - 骨架可靠：lib.rs 实测编译通过、六章三条验收路径在本机全绿、镜像清单与坑列表大部分准确。
-- 扣 3 分：①**无管理员场景零覆盖**（VS Build Tools 假设在本机直接失效，是本环境唯一可行的路径却没写，占 1.5 分）；②skill 自带的 tauri.conf.json 缺 zh-CN 配置，导致第六章命令在中文 productName 下必失败（占 1 分）；③若干过时/不准的细节（dsh.cmd 理由、SmartScreen 触发条件、cargo search 验证命令、测速阈值、256x256.png、小南梁.exe 路径）累加占 0.5 分。
+- 扣 3 分：①**无管理员场景零覆盖**（VS Build Tools 假设在本机直接失效，是本环境唯一可行的路径却没写，占 1.5 分）；②skill 自带的 tauri.conf.json 缺 zh-CN 配置，导致第六章命令在中文 productName 下必失败（占 1 分）；③若干过时/不准的细节（dsh.cmd 理由、SmartScreen 触发条件、cargo search 验证命令、测速阈值、256x256.png、DeepSeek Harness Desktop Desktop.exe 路径）累加占 0.5 分。

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "小南梁",
+  "productName": "DeepSeek Harness Desktop Desktop",
   "version": "0.4.0",
-  "identifier": "com.arcreel.dsh-desktop",
+  "identifier": "com.arcreel.dsh-desktop-tauriapp",
   "build": {
     "frontendDist": "../src"
   },
@@ -12,7 +12,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "小南梁",
+        "title": "DeepSeek Harness Desktop Desktop",
         "width": 1280,
         "height": 840,
         "minWidth": 940,
@@ -23,7 +23,7 @@
       {
         "label": "pet",
         "url": "pet.html",
-        "title": "小南梁桌宠",
+        "title": "DeepSeek Harness Desktop Desktop桌宠",
         "width": 260,
         "height": 300,
         "resizable": false,
@@ -50,7 +50,7 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
-    "shortDescription": "小南梁 —— DeepSeek Harness 桌面客户端",
+    "shortDescription": "DeepSeek Harness Desktop Desktop —— DeepSeek Harness 桌面客户端",
     "longDescription": "一键启动 DeepSeek Harness Web GUI 的桌面壳：自动拉起本地服务、托盘常驻、退出自动清理。",
     "windows": {
       "wix": {

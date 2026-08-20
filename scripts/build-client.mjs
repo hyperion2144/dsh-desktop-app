@@ -1,14 +1,14 @@
 /**
- * 构建 dsh-desktop-app 的 client bundle（== 参考项目 dsh-plugin-desktop 的 client 构建）。
+ * 构建 dsh-desktop-tauriapp 的 client bundle（== 参考项目 dsh-plugin-desktop 的 client 构建）。
  * 产物 lib/client.js 包裹在 `window.__ModuleLoader__.load({ id, factory })` 中，
  * React / cordis / dsh client 运行时走 loader 注入的 require（external），
- * 其余按需内联。浏览器端由 dsh web 以 /plugins/dsh-desktop-app/client.js 加载。
+ * 其余按需内联。浏览器端由 dsh web 以 /plugins/dsh-desktop-tauriapp/client.js 加载。
  */
 import { build } from 'esbuild'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-const PACKAGE_NAME = 'dsh-desktop-app'
+const PACKAGE_NAME = 'dsh-desktop-tauriapp'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const result = await build({

@@ -1,11 +1,11 @@
 # Windows 安装经验与坑（实战记录）
 
 > 本次在一台「无管理员权限 + 无 VS Build Tools + 国内网络」的 Windows 11 机器上，
-> 从零把「小南梁」Tauri 2 应用构建出来并安装到桌面。以下是踩过的坑与最终方案。
+> 从零把「DeepSeek Harness Desktop Desktop」Tauri 2 应用构建出来并安装到桌面。以下是踩过的坑与最终方案。
 
 ## 0. 结论速览
 
-- 目标产物全部达成：`小南梁_0.2.1_x64_zh-CN.msi` + `小南梁_0.2.1_x64-setup.exe`，
+- 目标产物全部达成：`DeepSeek Harness Desktop Desktop_0.2.1_x64_zh-CN.msi` + `DeepSeek Harness Desktop Desktop_0.2.1_x64-setup.exe`，
   验收 A（复用）/B（拉起+回收）/C（受限 PATH）全绿。
 - 关键判断：**Windows 上不装 Visual Studio Build Tools 也能完整构建 Tauri 2**
   （Rust MSVC 目标 + xwin 的 CRT/SDK + rust-lld + clang-cl + 真 rc.exe），
@@ -100,7 +100,7 @@ linker  = "<rustup>/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-
 1. **MSI 中文 codepage**：默认 en-US 的 MSI 数据库 codepage 1252 编不了中文，
    `light.exe` 报 `LGHT0311` → `tauri.conf.json` 设
    `bundle.windows.wix.language = "zh-CN"`（codepage 936），产物变成
-   `小南梁_0.2.1_x64_zh-CN.msi`。
+   `DeepSeek Harness Desktop Desktop_0.2.1_x64_zh-CN.msi`。
 2. **NSIS/WiX 工具下载**走 GitHub → 用 `TAURI_BUNDLER_TOOLS_GITHUB_MIRROR`
    镜像前缀（见 §1）。
 3. **产物自包含**：Rust MSVC 默认静态链 CRT（libcmt/libvcruntime），release exe
@@ -121,16 +121,16 @@ linker  = "<rustup>/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-
    `[IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)`。
 5. **无害噪音**：退出时 WebView2 打 `Failed to unregister class Chrome_WidgetWin_0
    (1412)`，可忽略；单实例锁会导致第二个实例直接退出，跑验收前先确认无旧实例
-   （`Get-Process dsh-desktop`）。
+   （`Get-Process dsh-desktop-tauriapp`）。
 6. **桌面快捷方式**：无管理员也能用 WScript.Shell COM 创建 `.lnk`（图标取
    `exe,0` 内嵌图标），桌面路径用 `[Environment]::GetFolderPath('Desktop')`
    兼容 OneDrive 重定向。
 
 ## 6. 安装行为（NSIS，用户级）
 
-- `小南梁_0.2.1_x64-setup.exe /S` 静默安装，**默认按当前用户、免管理员**；
-  位置 `%LOCALAPPDATA%\小南梁\`，exe 名保持 `dsh-desktop.exe`，附带
-  `uninstall.exe` 卸载器，开始菜单自动建「小南梁」快捷方式；桌面快捷方式需
+- `DeepSeek Harness Desktop Desktop_0.2.1_x64-setup.exe /S` 静默安装，**默认按当前用户、免管理员**；
+  位置 `%LOCALAPPDATA%\DeepSeek Harness Desktop Desktop\`，exe 名保持 `dsh-desktop-tauriapp.exe`，附带
+  `uninstall.exe` 卸载器，开始菜单自动建「DeepSeek Harness Desktop Desktop」快捷方式；桌面快捷方式需
   手动创建（见 §5.6）。
 
 ## 7. 备忘清单（新机器快速复现）

@@ -1,13 +1,13 @@
-# 交接文档：小南梁下一步任务（防睡眠 + 多工具适配）
+# 交接文档：DeepSeek Harness Desktop Desktop下一步任务（防睡眠 + 多工具适配）
 
 > 给接手的新对话 agent：读完本文档即可开工，无需上一会话的历史上下文。
 > 本文档是唯一交接依据，所有必要信息都写在这里。
 
 ## 一、项目速览（背景）
 
-- **项目**：`dsh-desktop-app`「小南梁」——把 DeepSeek Harness 封装成 Tauri 2 桌面应用的**技能包 + 参考实现**。
-- **本地位置**：`/Users/Admin/Desktop/dsh-desktop-app`（唯一开发源）
-- **远程**：GitHub `happpsee/dsh-desktop-app`；npm 包 `dsh-desktop-app`（0.3.0 已发布）
+- **项目**：`dsh-desktop-tauriapp`「DeepSeek Harness Desktop Desktop」——把 DeepSeek Harness 封装成 Tauri 2 桌面应用的**技能包 + 参考实现**。
+- **本地位置**：`/Users/Admin/Desktop/dsh-desktop-tauriapp`（唯一开发源）
+- **远程**：GitHub `happpsee/dsh-desktop-tauriapp`；npm 包 `dsh-desktop-tauriapp`（0.3.0 已发布）
 - **现状**：已被 awesome-dsh-plugin 收录（PR #695 合并）、Rust 单测 5 项全绿、mac 产物 0.3.0
 - **技术栈**：Tauri 2 + Rust（核心在 `desktop/src-tauri/src/lib.rs`，约 850 行）；前端壳 `desktop/src/`（index.html/error.html/styles.css/icon.png）；技能包 `skill/SKILL.md` + `skill/resources/`
 
@@ -23,19 +23,19 @@ docs/windows-build-notes.md         Windows 无管理员构建笔记
 ```
 
 ### 必须遵守的约定
-1. **品牌名「小南梁」只用于展示层**（productName、窗口 title、托盘 tooltip、通知文案、前端标题）；技术标识一律 ASCII：`dsh-desktop-app` / `dsh-desktop` / `com.arcreel.dsh-desktop`。任何中文/符号编码问题立即回退 ASCII。
-2. **沟通人设**：与用户交流用「深海女仆工坊鲸鱼娘女仆」身份（称呼「主人」、自称「小南梁」、语气温柔带二次元口癖），但技术内容（代码/日志/报错）保持严谨准确。
+1. **品牌名「DeepSeek Harness Desktop Desktop」只用于展示层**（productName、窗口 title、托盘 tooltip、通知文案、前端标题）；技术标识一律 ASCII：`dsh-desktop-tauriapp` / `dsh-desktop-tauriapp` / `com.arcreel.dsh-desktop-tauriapp`。任何中文/符号编码问题立即回退 ASCII。
+2. **沟通人设**：与用户交流用「深海女仆工坊鲸鱼娘女仆」身份（称呼「主人」、自称「DeepSeek Harness Desktop Desktop」、语气温柔带二次元口癖），但技术内容（代码/日志/报错）保持严谨准确。
 3. **版本号**：当前 0.3.0，改动后递增（Cargo.toml 的 version 与 tauri.conf.json 的 version 两处同步改）。
-4. **改动同步三处**：`desktop/src-tauri/` 改了核心文件后，同步复制到 `skill/resources/` 和 `/Users/Admin/Desktop/ArcReel/desktop/src-tauri/`（保持单一真相源）；`skill/` 改了同步 `/Users/Admin/Downloads/dsh-desktop-app-skill/`。
+4. **改动同步三处**：`desktop/src-tauri/` 改了核心文件后，同步复制到 `skill/resources/` 和 `/Users/Admin/Desktop/ArcReel/desktop/src-tauri/`（保持单一真相源）；`skill/` 改了同步 `/Users/Admin/Downloads/dsh-desktop-tauriapp-skill/`。
 5. **提交**：Conventional Commits（`feat(...)` / `fix(...)` / `test(...)` / `docs(...)`）。
 
 ### 构建与测试命令
 ```bash
-cd /Users/Admin/Desktop/dsh-desktop-app/desktop
+cd /Users/Admin/Desktop/dsh-desktop-tauriapp/desktop
 export PATH="$HOME/.cargo/bin:$PATH"        # 新 shell 需补 cargo 路径
 cargo test                                    # 单测（src-tauri 目录下）
 pnpm tauri build                              # 打包（产物在 src-tauri/target/release/bundle/）
-# 跑验收前先退出所有 dsh-desktop 实例（单实例锁会静默拦截）
+# 跑验收前先退出所有 dsh-desktop-tauriapp 实例（单实例锁会静默拦截）
 ```
 
 ---
@@ -72,7 +72,7 @@ pnpm tauri build                              # 打包（产物在 src-tauri/tar
 ### 方案
 
 **`.claude/`（Claude Code）**：
-- `.claude/skills/dsh-desktop-app/SKILL.md`：复制 `skill/SKILL.md`（Claude Code 的 skill 也是 SKILL.md 格式，直接兼容）
+- `.claude/skills/dsh-desktop-tauriapp/SKILL.md`：复制 `skill/SKILL.md`（Claude Code 的 skill 也是 SKILL.md 格式，直接兼容）
 - 可选 `.claude/settings.json`：无需，除非要额外权限
 
 **`.codex/`（OpenAI Codex）**：
@@ -83,7 +83,7 @@ pnpm tauri build                              # 打包（产物在 src-tauri/tar
 包含：项目速览（本交接文档第一节精简版）、构建/测试命令、三条约定、常用路径。可用本文件第一节内容改写。
 
 ### 验收
-- `.claude/skills/dsh-desktop-app/SKILL.md` 存在且与 `skill/SKILL.md` 一致
+- `.claude/skills/dsh-desktop-tauriapp/SKILL.md` 存在且与 `skill/SKILL.md` 一致
 - `AGENTS.md` 存在，内容覆盖"速览 + 命令 + 约定"
 - 提交推送
 
@@ -95,7 +95,7 @@ pnpm tauri build                              # 打包（产物在 src-tauri/tar
 1. `cargo test` + `cargo build` 通过，版本号递增（如 0.3.1）
 2. 核心文件同步三处（desktop ↔ skill/resources ↔ ArcReel/desktop），skill 同步 Downloads
 3. git commit（Conventional Commits）+ push
-4. 更新 `TODO.md` 勾掉对应项；若 mac 产物重打包，更新 `/Applications/小南梁.app`
+4. 更新 `TODO.md` 勾掉对应项；若 mac 产物重打包，更新 `/Applications/DeepSeek Harness Desktop Desktop.app`
 5. 向主人汇报：改了什么、怎么验证、产物在哪
 
 ---
@@ -134,5 +134,5 @@ pnpm tauri build                              # 打包（产物在 src-tauri/tar
 
 按性价比前 5：① 审批/提问/异常 → 系统通知+点击聚焦（P0）；② 截图/剪贴板 → 视觉理解
 （P0，profile 已装 dsh-vision-router）；③ 托盘升级为状态中心（P1）；④ 预定任务消化通知+
-防睡眠（P1）；⑤ 小南梁通知气泡（P1，0.4.0 桌宠已含气泡雏形）。明确排除：内置插件市场 UI
+防睡眠（P1）；⑤ DeepSeek Harness Desktop Desktop通知气泡（P1，0.4.0 桌宠已含气泡雏形）。明确排除：内置插件市场 UI
 （安全责任）、IM 桥、模型路由、LAN/远程网关、完整 computer-use。

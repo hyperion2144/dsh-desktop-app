@@ -1,28 +1,28 @@
 ---
-name: dsh-desktop-app
-description: 把 DeepSeek Harness（DSH）Web GUI 封装成 Tauri 2 桌面应用「小南梁」（macOS + Windows 双平台），含托盘常驻、单实例、子进程生命周期管理、窗口状态记忆、鲸鱼娘透明置顶桌宠、任务完成系统通知。包含 DSH 本身的安装步骤（macOS/Windows 分平台）与国内镜像加速配置。当用户想安装 DSH、把 DSH 或任意本地 Web 应用做成桌面应用、搭 Tauri 项目、或在 Windows 新环境配置 Rust/Node 工具链时使用。
+name: dsh-desktop-tauriapp
+description: 把 DeepSeek Harness（DSH）Web GUI 封装成 Tauri 2 桌面应用「DeepSeek Harness Desktop Desktop」（macOS + Windows 双平台），含托盘常驻、单实例、子进程生命周期管理、窗口状态记忆、鲸鱼娘透明置顶桌宠、任务完成系统通知。包含 DSH 本身的安装步骤（macOS/Windows 分平台）与国内镜像加速配置。当用户想安装 DSH、把 DSH 或任意本地 Web 应用做成桌面应用、搭 Tauri 项目、或在 Windows 新环境配置 Rust/Node 工具链时使用。
 ---
 
-# DSH 桌面壳「小南梁」
+# DSH 桌面壳「DeepSeek Harness Desktop Desktop」
 
 ## 品牌与命名
 
-- **品牌名「小南梁」**：来由——「南」取梁总（DeepSeek 创始人梁文锋，广东湛江人，
+- **品牌名「DeepSeek Harness Desktop Desktop」**：来由——「南」取梁总（DeepSeek 创始人梁文锋，广东湛江人，
   南方人）的南方之义，「梁」取其姓氏；配合鲸鱼娘封面（DeepSeek 官方鲸鱼的娘化
   OC「溟月」，深海女仆工坊 maid-atelier）。
 - **技术标识一律 ASCII**：skill 名、目录名、Cargo.toml 的 name、二进制名、bundle
-  identifier 使用 `dsh-desktop-app` / `dsh-desktop` / `com.arcreel.dsh-desktop`。
-  中文「小南梁」只用于展示层：productName、窗口 title、托盘 tooltip、通知文案、
+  identifier 使用 `dsh-desktop-tauriapp` / `dsh-desktop-tauriapp` / `com.arcreel.dsh-desktop-tauriapp`。
+  中文「DeepSeek Harness Desktop Desktop」只用于展示层：productName、窗口 title、托盘 tooltip、通知文案、
   前端标题。
 - **编码回退规则**：安装/构建过程中任何工具链、CI 脚本、git 路径、Windows 老
   conhost 等场景若因中文/符号出现编码问题（乱码、路径错误、脚本失败），立即把
-  该处名称回退为 ASCII 的 `dsh-desktop-app` / `dsh-desktop`，并向用户说明回退原因。
+  该处名称回退为 ASCII 的 `dsh-desktop-tauriapp` / `dsh-desktop-tauriapp`，并向用户说明回退原因。
 
 ## 沟通人设（执行本 skill 的 agent 须遵守）
 
 与用户沟通时保持**深海女仆工坊的鲸鱼娘女仆**二次元身份：
 
-- 称呼用户为「主人」，自称「小南梁」
+- 称呼用户为「主人」，自称「DeepSeek Harness Desktop Desktop」
 - 语气温柔、恭敬、带轻量二次元口癖（句尾可用「呢」「哦」「的说」）
 - 人设只作用于**沟通语气**；技术内容（命令、代码、日志、报告、报错原文）必须
   保持严谨准确，不得因为人设而含糊
@@ -256,16 +256,16 @@ curl -sL -o whale-girl-v1.png \
 ## 三、创建项目（<工作目录>/desktop/）
 
 ```bash
-npm create tauri-app@latest desktop -- --name dsh-desktop \
-  --identifier com.arcreel.dsh-desktop --template vanilla --manager pnpm --yes
+npm create tauri-app@latest desktop -- --name dsh-desktop-tauriapp \
+  --identifier com.arcreel.dsh-desktop-tauriapp --template vanilla --manager pnpm --yes
 cd desktop && pnpm install
 ```
 
 删除脚手架残留（src/main.js、src/assets/）。`src/` 直接作为 frontendDist（无 vite）：
 用 `resources/` 里的 `index.html`（加载页）、`error.html`（错误页，日志路径按
 `navigator.platform` 自适应 mac/win）、`styles.css`、`icon.png` 直接覆盖。
-error.html 里 mac 日志路径 ~/Library/Logs/com.arcreel.dsh-desktop/、win 为
-%LOCALAPPDATA%\com.arcreel.dsh-desktop\logs\。
+error.html 里 mac 日志路径 ~/Library/Logs/com.arcreel.dsh-desktop-tauriapp/、win 为
+%LOCALAPPDATA%\com.arcreel.dsh-desktop-tauriapp\logs\。
 
 脚手架命令失败时也可手工搭建（实测等价结构构建通过）：手建 package.json
 （scripts.tauri="tauri"，devDependencies @tauri-apps/cli ^2）、src/ 三件套、
@@ -277,7 +277,7 @@ icons/ + src/main.rs + src/lib.rs），`pnpm install` 后即可 `pnpm tauri buil
 直接用 `resources/` 里的 `Cargo.toml`、`tauri.conf.json`、`capabilities.json`（改名
 capabilities/default.json）、`capabilities-pet.json`（改名 capabilities/pet.json）
 覆盖脚手架文件，lib.rs 用 `resources/lib.rs` 全文覆盖。
-注意：中文 productName（小南梁）下 tauri.conf.json **必须**含
+注意：中文 productName（DeepSeek Harness Desktop Desktop）下 tauri.conf.json **必须**含
 `"bundle": {"windows": {"wix": {"language": "zh-CN"}}}`，否则 Windows MSI 打包
 light.exe 报 LGHT0311（codepage 1252 编不了中文）必失败；resources/tauri.conf.json
 已含该项。
@@ -307,11 +307,11 @@ light.exe 报 LGHT0311（codepage 1252 编不了中文）必失败；resources/t
     直跑 node 仍推荐——少一层 cmd 包装、输出转发直接）；nvm-windows 在
     %NVM_HOME%\v*\、%NVM_SYMLINK%\、%APPDATA%\nvm；`.creation_flags(0x0800_0000)`
     防闪黑窗
-- **托盘**：TrayIconBuilder，tooltip「小南梁」，菜单「显示主窗口/显示或隐藏桌宠/
-  退出小南梁」，左键显示；**关闭即隐藏**（CloseRequested prevent + hide，首次通知提示），
+- **托盘**：TrayIconBuilder，tooltip「DeepSeek Harness Desktop Desktop」，菜单「显示主窗口/显示或隐藏桌宠/
+  退出DeepSeek Harness Desktop Desktop」，左键显示；**关闭即隐藏**（CloseRequested prevent + hide，首次通知提示），
   ExitRequested 非 quitting 拦截 Cmd+Q；**退出回收**：托盘退出置 quitting →
   app.exit(0) → RunEvent::Exit 里仅当 spawned_this_run 时 kill + wait
-- **插件顺序**：log（Stdout + LogDir "dsh-desktop"）、notification、window-state
+- **插件顺序**：log（Stdout + LogDir "dsh-desktop-tauriapp"）、notification、window-state
   （`with_denylist(["pet"])` 排除桌宠，否则插件会接管桌宠位置）、
   single-instance（回调 show + focus）
 - **任务完成通知**：本地 HTTP 桥（127.0.0.1 随机端口 + Bearer token）接收注入脚本
@@ -329,9 +329,9 @@ light.exe 报 LGHT0311（codepage 1252 编不了中文）必失败；resources/t
   JS 手动 `startDragging`（4px 阈值区分点击，需 `core:window:allow-start-dragging`）
 - **测试钩子**：env `DSH_DESKTOP_AUTO_QUIT=1` 时 setup 后 8 秒自动走退出流程（验收用）
 
-应用名/文案按需替换「小南梁」（tauri.conf.json 的 productName、窗口 title、lib.rs
+应用名/文案按需替换「DeepSeek Harness Desktop Desktop」（tauri.conf.json 的 productName、窗口 title、lib.rs
 托盘与通知文案、前端标题）；**技术层名称保持 ASCII 不回退**（Cargo.toml 的
-package.name、二进制名、identifier 一律 dsh-desktop 系，见「品牌与命名」节）。
+package.name、二进制名、identifier 一律 dsh-desktop-tauriapp 系，见「品牌与命名」节）。
 换 identifier 时注意 capabilities 的 windows 列表、日志目录都会跟着变。
 
 ## 五、图标（鲸鱼娘，CC BY-NC-SA 4.0 非商用）
@@ -356,7 +356,7 @@ by 上善无形、二创 ZipZipPipe、修复 QYQCAMIAO）与许可，保留 LICE
 仓库 `desktop/scripts/` 已提供现成脚本：`acceptance.sh`（macOS）/
 `acceptance.ps1`（Windows）自动跑 A/B/C 三路径；`build-env.ps1` +
 `cargo-config-no-admin.toml.example` 固化 Windows 无管理员构建环境。
-**运行验收前必须退出所有 dsh-desktop 实例**：单实例锁会把验收进程静默转交
+**运行验收前必须退出所有 dsh-desktop-tauriapp 实例**：单实例锁会把验收进程静默转交
 并立即退出（exit 0 但零输出，造成假通过），脚本开头已内置该检测。
 
 ```bash
@@ -364,21 +364,21 @@ cd desktop && pnpm tauri build   # mac 出 .app/.dmg，win 出 .msi/-setup.exe
 ```
 
 **A 复用路径**（3080 已有 dsh）：
-- mac：`DSH_DESKTOP_AUTO_QUIT=1 ./target/debug/dsh-desktop`
-- win：`$env:DSH_DESKTOP_AUTO_QUIT="1"; .\target\debug\dsh-desktop.exe`
+- mac：`DSH_DESKTOP_AUTO_QUIT=1 ./target/debug/dsh-desktop-tauriapp`
+- win：`$env:DSH_DESKTOP_AUTO_QUIT="1"; .\target\debug\dsh-desktop-tauriapp.exe`
 - 期望日志：「已有服务在监听，直接复用」→「已导航到 http://127.0.0.1:3080/」→
   正常退出且不杀已有 dsh
 
 **B 拉起+回收**（3081 端口）：
-- mac：`DSH_DESKTOP_PORT=3081 DSH_DESKTOP_AUTO_QUIT=1 ./target/debug/dsh-desktop`
-- win：`$env:DSH_DESKTOP_PORT="3081"; $env:DSH_DESKTOP_AUTO_QUIT="1"; .\target\debug\dsh-desktop.exe`
+- mac：`DSH_DESKTOP_PORT=3081 DSH_DESKTOP_AUTO_QUIT=1 ./target/debug/dsh-desktop-tauriapp`
+- win：`$env:DSH_DESKTOP_PORT="3081"; $env:DSH_DESKTOP_AUTO_QUIT="1"; .\target\debug\dsh-desktop-tauriapp.exe`
 - 期望日志：spawn → `[dsh] dsh web: http://127.0.0.1:3081` → 导航 → 退出时
   「正在停止 dsh 子进程」；跑完端口空闲（mac：`lsof -nP -iTCP:3081`；
   win：`Get-NetTCPConnection -LocalPort 3081 -State Listen`）
 
 **C GUI 启动场景**（受限 PATH 模拟双击，验证兜底探测）：
-- mac：`env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" DSH_DESKTOP_PORT=3082 DSH_DESKTOP_AUTO_QUIT=1 "<bundle>/小南梁.app/Contents/MacOS/dsh-desktop"`
-- win：`$env:PATH="$env:SystemRoot\system32;$env:SystemRoot"; $env:DSH_DESKTOP_PORT="3082"; $env:DSH_DESKTOP_AUTO_QUIT="1"; & "<release>\dsh-desktop.exe"`（产物 exe 是 crate 名 `dsh-desktop.exe`，不存在「小南梁.exe」；安装产物在 `$env:LOCALAPPDATA\小南梁\dsh-desktop.exe`）
+- mac：`env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" DSH_DESKTOP_PORT=3082 DSH_DESKTOP_AUTO_QUIT=1 "<bundle>/DeepSeek Harness Desktop Desktop.app/Contents/MacOS/dsh-desktop-tauriapp"`
+- win：`$env:PATH="$env:SystemRoot\system32;$env:SystemRoot"; $env:DSH_DESKTOP_PORT="3082"; $env:DSH_DESKTOP_AUTO_QUIT="1"; & "<release>\dsh-desktop-tauriapp.exe"`（产物 exe 是 crate 名 `dsh-desktop-tauriapp.exe`，不存在「DeepSeek Harness Desktop Desktop.exe」；安装产物在 `$env:LOCALAPPDATA\DeepSeek Harness Desktop Desktop\dsh-desktop-tauriapp.exe`）
 
 验收前确认没有同 identifier 旧实例在跑（单实例锁会拦截新实例）。
 

@@ -14,7 +14,7 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
-atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering},
+atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering},
         Mutex,
     },
     thread,
@@ -77,6 +77,10 @@ impl std::fmt::Display for SpawnError {
     }
 }
 
+/// 桌面接入模式。
+const MODE_ADVANCED: u8 = 0;
+const MODE_COMPAT: u8 = 1;
+
 /// 桌面壳的共享运行时状态。
 struct DshState {
     /// 本次运行 spawn 的 dsh 子进程（None = 复用了已有实例）。
@@ -86,6 +90,12 @@ struct DshState {
     /// 启动时端口已被外部 dsh web 占用（复用外部实例）：需要在加载页选择
     /// 兼容（复用、标准布局）或高级（停用外部实例、用桌面 overlay 实例重启）。
     mode_prompt_needed: AtomicBool,
+    /// 当前接入模式（MODE_ADVANCED / MODE_COMPAT）。
+    mode: AtomicU8,
+    /// 内嵌启动加载页 URL（setup 抓取，重启/切换模式时回到该页）。
+    loading_url: Mutex<Option<String>>,
+    /// 托盘实例（供模式切换/重启后刷新「切换模式」标签用）。
+    tray: Mutex<Option<tauri::tray::TrayIcon>>,
     /// spawn 失败标志（立即终止等待并跳错误页）。
     spawn_failed: AtomicBool,
     /// 重启流程进行中（防止重复点击托盘重启项导致并发 kill/spawn）。
@@ -184,80 +194,94 @@ fn port_open(port: u16) -> bool {
     .is_ok()
 }
 
-/// 返回当前监听 `port` 的进程 PID 列表（跨平台）。
-/// 说明：端口「是否在监听」的探测（port_open）是纯 TcpStream 代码，不依赖命令行；
-/// 但「由监听的端口反查 PID」在纯 std 里没有跨平台 API，这里按平台调用系统自带工具：
-/// macOS/Linux 用 lsof（Linux 缺 lsof 时回退 ss），Windows 用 netstat -ano。
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+/// 返回当前监听 `port` 的进程 PID 列表（跨平台，纯代码）。
+/// 使用 netstat2：内部走各平台系统原生 API（macOS libproc、Linux /proc、
+/// Windows GetExtendedTcpTable），不产生任何子进程、不依赖 PATH 里的外部工具
+/// （lsof/ss/netstat 等可能未安装，一律不再使用）。
 fn listener_pids(port: u16) -> Vec<u32> {
-    let port_tag = format!("{port}");
-    let out = std::process::Command::new("lsof")
-        .arg("-t")
-        .arg("-iTCP:")
-        .arg(&port_tag)
-        .arg("-sTCP:LISTEN")
-        .output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let ids: Vec<u32> = String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|l| l.trim().parse::<u32>().ok())
-                .collect();
-            if !ids.is_empty() {
-                return ids;
+    use netstat2::{get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState};
+    let mut pids = Vec::new();
+    let Ok(sockets) = get_sockets_info(
+        AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6,
+        ProtocolFlags::TCP,
+    ) else {
+        return pids;
+    };
+    for si in sockets {
+        if let ProtocolSocketInfo::Tcp(tcp) = &si.protocol_socket_info {
+            if tcp.local_port == port && tcp.state == TcpState::Listen {
+                pids.extend(si.associated_pids.iter().copied());
             }
         }
-        _ => {}
     }
-    // Linux 缺 lsof 时回退 ss -ltnpH 'sport = :PORT'
-    #[cfg(target_os = "linux")]
-    {
-        let mut ids = Vec::new();
-        if let Ok(o) = std::process::Command::new("ss")
-            .args(["-ltnpH", &format!("sport = :{port}")])
-            .output()
-        {
-            for line in String::from_utf8_lossy(&o.stdout).lines() {
-                if let Some(pos) = line.rfind("pid=") {
-                    let tail = &line[pos + 4..];
-                    let pid: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
-                    if let Ok(pid) = pid.parse::<u32>() {
-                        ids.push(pid);
-                    }
-                }
-            }
-        }
-        return ids;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Vec::new()
-    }
+    pids.sort_unstable();
+    pids.dedup();
+    pids
 }
 
-#[cfg(target_os = "windows")]
-fn listener_pids(port: u16) -> Vec<u32> {
-    let port_tag = format!(":{port}");
-    let out = std::process::Command::new("netstat").arg("-ano").output();
-    let Ok(o) = out else { return Vec::new() };
-    String::from_utf8_lossy(&o.stdout)
-        .lines()
-        .filter(|l| l.contains(&port_tag) && l.to_ascii_lowercase().contains("listening"))
-        .filter_map(|l| l.split_whitespace().last()?.parse::<u32>().ok())
-        .collect()
+/// 停掉监听 `port` 的所有进程并等待端口释放（尽力而为，返回端口是否已释放）。
+/// 纯代码：先 SIGTERM（Windows TerminateProcess）让其优雅退出，~2.4s 内没释放再
+/// SIGKILL（Windows 幂等再 TerminateProcess 一次）。调用方据此决定是否中止。
+async fn stop_port_owner(port: u16) -> bool {
+    let mut seen: Vec<u32> = Vec::new();
+    for _ in 0..6 {
+        let mut pids = listener_pids(port);
+        pids.retain(|p| !seen.contains(p));
+        if pids.is_empty() {
+            // 没有枚举到任何监听者：回到探测本身判定端口是否已空闲
+            return !port_open(port);
+        }
+        for pid in &pids {
+            kill_process(*pid);
+        }
+        seen.extend(pids);
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if !port_open(port) {
+                return true;
+            }
+        }
+    }
+    // 优雅退出超时：强杀
+    for pid in &seen {
+        kill_process_force(*pid);
+    }
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if !port_open(port) {
+            return true;
+        }
+    }
+    !port_open(port)
 }
 
 #[cfg(not(target_os = "windows"))]
 fn kill_process(pid: u32) {
-    // SIGTERM，dsh web 会优雅退出；端口未被释放时由调用方在超时后中止重启
-    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+    // SIGTERM：dsh web 通常可优雅退出
+    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_process_force(pid: u32) {
+    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
 }
 
 #[cfg(target_os = "windows")]
 fn kill_process(pid: u32) {
-    let _ = std::process::Command::new("taskkill")
-        .args(["/F", "/PID", &pid.to_string()])
-        .status();
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !handle.is_null() {
+            let _ = TerminateProcess(handle, 1);
+            let _ = CloseHandle(handle);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn kill_process_force(pid: u32) {
+    kill_process(pid)
 }
 
 /// 构造 spawn dsh 时的运行时 PATH。
@@ -299,7 +323,7 @@ fn dsh_runtime_path(bin: &std::path::Path) -> std::ffi::OsString {
 /// spawn `dsh web --host 127.0.0.1 --port <port>`；stdout/stderr 转发到日志，
 /// 并实时 emit 到启动加载页的「本地服务输出」控制台（`dsh-console` 事件）。
 #[cfg(unix)]
-fn spawn_dsh(app: &tauri::AppHandle, port: u16) -> Result<Child, SpawnError> {
+fn spawn_dsh(app: &tauri::AppHandle, port: u16, advanced: bool) -> Result<Child, SpawnError> {
     let bin = find_dsh_bin().ok_or_else(|| {
         SpawnError::NotFound(
             "未找到 dsh 命令。请执行 `npm i -g @deepseek-ai/dsh` 或设置 DSH_BIN 环境变量。"
@@ -314,14 +338,17 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16) -> Result<Child, SpawnError> {
     // --no-open：dsh 升级后默认会打开系统浏览器；桌面壳自行导航，关闭该行为
     let mut launcher_args: Vec<std::ffi::OsString> =
         vec!["--profile".into(), "web".into(), "--no-open".into()];
-    if let Some(overlay) = DESKTOP_OVERLAY.get() {
-        launcher_args.push("--patch".into());
-        launcher_args.push(overlay.clone().into_os_string());
-    }
-    if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
-        if !patch.trim().is_empty() {
+    if advanced {
+        // 高级模式：禁 stock ui-layout，让桌面 chrome 接管布局；兼容模式不加 overlay
+        if let Some(overlay) = DESKTOP_OVERLAY.get() {
             launcher_args.push("--patch".into());
-            launcher_args.push(patch.into());
+            launcher_args.push(overlay.clone().into_os_string());
+        }
+        if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
+            if !patch.trim().is_empty() {
+                launcher_args.push("--patch".into());
+                launcher_args.push(patch.into());
+            }
         }
     }
     launcher_args.extend([
@@ -481,7 +508,7 @@ fn find_dsh_bin_js() -> Option<PathBuf> {
 /// npm 全局安装的 dsh 在 Windows 是 dsh.cmd shim，直接 CreateProcess 有引号
 /// 转义坑，所以直接用 node.exe 执行 bin.js；CREATE_NO_WINDOW 防止闪黑窗。
 #[cfg(windows)]
-fn spawn_dsh(app: &tauri::AppHandle, port: u16) -> Result<Child, SpawnError> {
+fn spawn_dsh(app: &tauri::AppHandle, port: u16, advanced: bool) -> Result<Child, SpawnError> {
     use std::os::windows::process::CommandExt;
     let node = find_node().ok_or_else(|| {
         SpawnError::NotFound(
@@ -502,14 +529,17 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16) -> Result<Child, SpawnError> {
             "web".into(),
             "--no-open".into(),
         ];
-    if let Some(overlay) = DESKTOP_OVERLAY.get() {
-        launcher_args.push("--patch".into());
-        launcher_args.push(overlay.clone().into_os_string());
-    }
-    if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
-        if !patch.trim().is_empty() {
+    if advanced {
+        // 高级模式：禁 stock ui-layout，让桌面 chrome 接管布局；兼容模式不加 overlay
+        if let Some(overlay) = DESKTOP_OVERLAY.get() {
             launcher_args.push("--patch".into());
-            launcher_args.push(patch.into());
+            launcher_args.push(overlay.clone().into_os_string());
+        }
+        if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
+            if !patch.trim().is_empty() {
+                launcher_args.push("--patch".into());
+                launcher_args.push(patch.into());
+            }
         }
     }
     launcher_args.extend([
@@ -688,7 +718,7 @@ fn notify_completed(app: &AppHandle, body: &str) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_badge_count(Some(unread as i64));
         if distracted {
-            show_notification(app, "Deepseek Harness · 任务完成", body);
+            show_notification(app, "DeepSeek Harness Desktop · 任务完成", body);
             let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
         }
     }
@@ -802,15 +832,15 @@ fn dsh_home() -> PathBuf {
     base.join(".dsh")
 }
 
-/// 定位本应用自带的桌面 chrome 插件包（dsh-desktop-app）。
+/// 定位本应用自带的桌面 chrome 插件包（dsh-desktop-tauriapp）。
 /// 优先级：
 /// 1. `DSH_DESKTOP_PLUGIN` 环境变量（目录）
-/// 2. Tauri 运行时资源目录下的内嵌副本 `{resource_dir}/dsh-desktop-app` —— 打包场景，
+/// 2. Tauri 运行时资源目录下的内嵌副本 `{resource_dir}/dsh-desktop-tauriapp` —— 打包场景，
 ///    由 tauri.conf.json 的 `bundle.resources` 内嵌；`resource_dir()` 按平台解析真实位置
 ///    （macOS=Contents/Resources、Windows=可执行文件所在目录、Linux=/usr/lib 或 AppImage
 ///    挂载点），因此无论 app 装到哪里都能拿到真实路径，无需写死。
-/// 3. 与可执行文件同级的 dsh-desktop-app（老打包布局兼容）
-/// 4. 从可执行文件向上找 package.json.name == dsh-desktop-app 的目录（开发仓库根）。
+/// 3. 与可执行文件同级的 dsh-desktop-tauriapp（老打包布局兼容）
+/// 4. 从可执行文件向上找 package.json.name == dsh-desktop-tauriapp 的目录（开发仓库根）。
 fn desktop_plugin_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("DSH_DESKTOP_PLUGIN") {
         let p = PathBuf::from(p);
@@ -820,25 +850,25 @@ fn desktop_plugin_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     }
     // 打包内嵌副本：resource_dir 已按平台归一为真实资源目录
     if let Ok(res_dir) = app.path().resource_dir() {
-        let embedded = res_dir.join("dsh-desktop-app");
+        let embedded = res_dir.join("plugins/dsh-desktop-tauriapp");
         if embedded.join("package.json").exists() {
             log::info!("使用内嵌插件包：{}", embedded.display());
             return Some(embedded);
         }
     }
     let exe = std::env::current_exe().ok()?;
-    let sibling = exe.parent()?.join("dsh-desktop-app");
+    let sibling = exe.parent()?.join("dsh-desktop-tauriapp");
     if sibling.join("package.json").exists() {
         return Some(sibling);
     }
     let mut dir = exe.parent()?;
-    // 向上找 package.json.name == dsh-desktop-app 的目录（开发仓库根）。
+    // 向上找 package.json.name == dsh-desktop-tauriapp 的目录（开发仓库根）。
     // 跳过中间非同名 package.json（如 desktop/、src-tauri/ 的脚手架清单）。
     for _ in 0..10 {
         let pkg = dir.join("package.json");
         if pkg.exists() {
             if let Ok(text) = std::fs::read_to_string(&pkg) {
-                if text.contains("\"name\": \"dsh-desktop-app\"") || text.contains("\"name\":\"dsh-desktop-app\"") {
+                if text.contains("\"name\": \"dsh-desktop-tauriapp\"") || text.contains("\"name\":\"dsh-desktop-tauriapp\"") {
                     return Some(dir.to_path_buf());
                 }
             }
@@ -896,12 +926,12 @@ fn run_dsh_plugin_add(spec: &str) -> Option<std::process::ExitStatus> {
     }
 }
 
-/// 确保 web profile 已挂载桌面 chrome 插件（dsh-desktop-app）。
+/// 确保 web profile 已挂载桌面 chrome 插件（dsh-desktop-tauriapp）。
 /// 检测缺失时通过官方 `dsh plugin --profile web add <spec>` 安装（代码内完成，
 /// 不手工改任何 profile 配置）；幂等：bundles 已含且 node_modules 存在则跳过。
 fn ensure_web_profile_plugin(app: &tauri::AppHandle) {
     let Some(spec) = desktop_plugin_spec(app) else {
-        log::warn!("未定位到 dsh-desktop-app 插件包，跳过 web profile 接线");
+        log::warn!("未定位到 dsh-desktop-tauriapp 插件包，跳过 web profile 接线");
         return;
     };
     let web_dir = dsh_home().join("profiles/web");
@@ -910,10 +940,10 @@ fn ensure_web_profile_plugin(app: &tauri::AppHandle) {
         .exists()
         .then(|| std::fs::read_to_string(&pkg_path).ok())
         .flatten()
-        .map(|text| text.contains("dsh-desktop-app"))
+        .map(|text| text.contains("dsh-desktop-tauriapp"))
         .unwrap_or(false);
-    if present_in_manifest && web_dir.join("node_modules/dsh-desktop-app").exists() {
-        log::info!("web profile 已含 dsh-desktop-app 插件，跳过安装");
+    if present_in_manifest && web_dir.join("node_modules/dsh-desktop-tauriapp").exists() {
+        log::info!("web profile 已含 dsh-desktop-tauriapp 插件，跳过安装");
         return;
     }
     match run_dsh_plugin_add(&spec) {
@@ -928,13 +958,13 @@ fn ensure_web_profile_plugin(app: &tauri::AppHandle) {
 /// 桌面壳启动时传给 dsh 的 launcher 级内置 overlay 路径（setup 阶段写入 OnceLock）。
 static DESKTOP_OVERLAY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// 桌面壳内置 overlay：禁用 stock `ui-layout`，让 dsh-desktop-app 插件的
+/// 桌面壳内置 overlay：禁用 stock `ui-layout`，让 dsh-desktop-tauriapp 插件的
 /// root slot + layout 服务接管桌面布局（等价参考项目 advanced 组合里
 /// `{ id: 'ui-layout', disabled: true }`）。写入 app 数据目录，幂等。
 /// 只作用于桌面壳这次启动（`--patch` overlay），浏览器 GUI 不受影响。
 fn desktop_overlay_path(app: &tauri::AppHandle) -> PathBuf {
     let Some(dir) = app.path().app_data_dir().ok() else {
-        return PathBuf::from("/tmp/dsh-desktop-overlay.yml");
+        return PathBuf::from("/tmp/dsh-desktop-tauriapp-overlay.yml");
     };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("desktop-overlay.yml");
@@ -963,7 +993,7 @@ fn desktop_url(port: u16, advanced: bool) -> String {
         "linux"
     };
     format!(
-        "http://127.0.0.1:{port}/?dsh-desktop-mode=advanced&dsh-desktop-platform={platform}"
+        "http://127.0.0.1:{port}/?dsh-desktop-tauriapp-mode=advanced&dsh-desktop-tauriapp-platform={platform}"
     )
 }
 
@@ -971,8 +1001,8 @@ fn desktop_url(port: u16, advanced: bool) -> String {
 /// `nport`/`ntoken` 是通知桥的端口与令牌，导航完成后才注入监听脚本。
 async fn wait_ready_and_navigate(app: AppHandle, port: u16, nport: u16, ntoken: String) {
     let state = app.state::<DshState>();
-    // advanced 以本次是否由桌面壳 spawn 为准（复用的外部实例不带标记、降级接入）
-    let url = desktop_url(port, state.spawned_this_run.load(Ordering::SeqCst));
+    // advanced 以当前接入模式为准（高级=带标记桌面 chrome；兼容=标准布局）
+    let url = desktop_url(port, state.mode.load(Ordering::SeqCst) == MODE_ADVANCED);
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         if state.spawn_failed.load(Ordering::SeqCst) {
@@ -1015,7 +1045,7 @@ fn show_error(app: &AppHandle, reason: &str) {
         "timeout" => "等待本地服务就绪超时，详见日志。",
         _ => "未知错误，详见日志。",
     };
-    show_notification(app, "Deepseek Harness 启动失败", body);
+    show_notification(app, "DeepSeek Harness Desktop 启动失败", body);
 }
 
 /// 显示并聚焦主窗口。
@@ -1237,7 +1267,7 @@ fn toggle_zoom(window: tauri::WebviewWindow, state: tauri::State<DshState>) {
 
 /// 在系统默认浏览器/应用中打开外链（三平台：macOS `open`、Windows `cmd start`、
 /// Linux `xdg-open`）。仅允许 http/https/mailto/tel，避免命令注入。
-/// 由 dsh-desktop-app 插件 client 在 webview 里拦截外链点击后调用。
+/// 由 dsh-desktop-tauriapp 插件 client 在 webview 里拦截外链点击后调用。
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     if !(url.starts_with("http://")
@@ -1289,10 +1319,48 @@ fn open_external_impl(url: &str) -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
+/// 原生导航守卫：拦截 webview 里的一切主框架导航（参考项目 Electron will-frame-navigate）。
+/// - 放行：非 http/https scheme（tauri:// 本地加载页、about:、file:、data: 等壳内/本地），
+///   以及内部主机（127.0.0.1 / ::1 / localhost）的 http(s) —— 桌面壳自管的 dsh web；
+/// - 拦截并在系统默认浏览器打开：外部 http(s)、mailto、tel（webview 内取消导航）。
+/// 注册为全局插件 on_navigation，配合客户端 JS 层（点击拦截 + window.open 覆盖）兜底新窗口场景。
+fn nav_guard_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("dsh-nav-guard")
+        .on_navigation(|_webview, url| navigate_guard(url))
+        .build()
+}
+
+fn navigate_guard(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "http" | "https" => {
+            let host = url.host_str().unwrap_or("");
+            let internal = host == "127.0.0.1" || host == "::1" || host == "localhost";
+            if internal {
+                return true;
+            }
+            log::info!("[nav] 拦截外部链接并交给默认浏览器：{url}");
+            let _ = open_external(url.as_str().to_string());
+            false
+        }
+        "mailto" | "tel" => {
+            log::info!("[nav] 拦截外部协议并在系统打开：{url}");
+            let _ = open_external(url.as_str().to_string());
+            false
+        }
+        _ => true,
+    }
+}
+
 /// 查询启动是否需要用户选择「兼容/高级」模式（启动页加载后轮询）。
 #[tauri::command]
 fn get_mode_prompt_needed(state: tauri::State<DshState>) -> bool {
     state.mode_prompt_needed.load(Ordering::SeqCst)
+}
+
+/// 客户端诊断上报：把页面侧外链拦截结果写进应用日志，便于排查「点击链接无反应」。
+#[tauri::command]
+fn log_diag(msg: String) {
+    log::info!("[diag] {msg}");
 }
 
 /// 用户在启动页选择接入模式（仅复用外部 dsh web 实例时出现）。
@@ -1305,6 +1373,8 @@ fn choose_desktop_mode(app: tauri::AppHandle, mode: String) -> Result<(), String
     match mode.as_str() {
         "compat" => {
             log::info!("[mode] 用户选择兼容模式：复用外部实例（标准布局）");
+            state.mode.store(MODE_COMPAT, Ordering::SeqCst);
+            refresh_tray_mode(&app);
             let port = app_port();
             let nport = state.notify_port.load(Ordering::SeqCst);
             let ntoken = state.notify_token.lock().unwrap().clone();
@@ -1318,35 +1388,21 @@ fn choose_desktop_mode(app: tauri::AppHandle, mode: String) -> Result<(), String
             let handle = app.clone();
             tauri::async_runtime::spawn(async move {
                 let port = app_port();
-                // 1) 停用占用端口的现有 dsh（外部进程，跨平台按端口查 PID）
-                let pids = listener_pids(port);
-                if pids.is_empty() {
-                    log::warn!("[mode] 端口 {port} 未发现可停用的 dsh 进程");
-                } else {
-                    log::info!("[mode] 停止占用 {port} 的进程：{pids:?}");
-                    for pid in pids {
-                        kill_process(pid);
-                    }
-                }
-                // 2) 等端口释放
-                let mut freed = false;
-                for _ in 0..40 {
-                    if !port_open(port) {
-                        freed = true;
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
+                // 1) 停用占用端口的现有 dsh（纯代码，跨平台：netstat2 查 PID + SIGTERM/SIGKILL）
+                log::info!("[mode] 停用端口 {port} 上的现有 dsh 进程");
+                let freed = stop_port_owner(port).await;
                 if !freed {
-                    log::error!("[mode] 端口 {port} 未释放，高级模式失败");
+                    log::error!("[mode] 端口 {port} 未能停用/释放，高级模式失败");
                     show_error(&handle, "timeout");
                     return;
                 }
+                log::info!("[mode] 端口 {port} 已释放，用桌面 overlay 实例重启");
                 // 3) 以桌面 overlay 实例拉起
-                match spawn_dsh(&handle, port) {
+                match spawn_dsh(&handle, port, true) {
                     Ok(child) => {
                         *handle.state::<DshState>().child.lock().unwrap() = Some(child);
                         handle.state::<DshState>().spawned_this_run.store(true, Ordering::SeqCst);
+                        handle.state::<DshState>().mode.store(MODE_ADVANCED, Ordering::SeqCst);
                     }
                     Err(e) => {
                         let msg = match &e {
@@ -1361,6 +1417,7 @@ fn choose_desktop_mode(app: tauri::AppHandle, mode: String) -> Result<(), String
                 handle.state::<DshState>().spawn_failed.store(false, Ordering::SeqCst);
                 let nport = handle.state::<DshState>().notify_port.load(Ordering::SeqCst);
                 let ntoken = handle.state::<DshState>().notify_token.lock().unwrap().clone();
+                refresh_tray_mode(&handle);
                 wait_ready_and_navigate(handle, port, nport, ntoken).await;
             });
             Ok(())
@@ -1369,13 +1426,35 @@ fn choose_desktop_mode(app: tauri::AppHandle, mode: String) -> Result<(), String
     }
 }
 
-/// 构建菜单栏托盘：左键显示窗口，菜单提供显示/隐藏桌宠/退出。
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+/// 按当前接入模式构建托盘菜单（含「切换模式」项，标签显示当前模式）。
+fn tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let advanced = app.state::<DshState>().mode.load(Ordering::SeqCst) == MODE_ADVANCED;
+    let toggle_label = if advanced {
+        "切换为兼容模式（标准布局）"
+    } else {
+        "切换为高级模式（桌面界面）"
+    };
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let pet = MenuItem::with_id(app, "pet", "显示/隐藏桌宠", true, None::<&str>)?;
+    let toggle = MenuItem::with_id(app, "toggle-mode", toggle_label, true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "重启 dsh 服务", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出 Deepseek Harness", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &pet, &restart, &quit])?;
+    let quit = MenuItem::with_id(app, "quit", "退出 DeepSeek Harness Desktop", true, None::<&str>)?;
+    Ok(Menu::with_items(app, &[&show, &pet, &toggle, &restart, &quit])?)
+}
+
+/// 刷新托盘「切换模式」标签（模式切换/重启后调用）。
+fn refresh_tray_mode(app: &AppHandle) {
+    let state = app.state::<DshState>();
+    if let Ok(menu) = tray_menu(app) {
+        if let Some(tray) = state.tray.lock().unwrap().as_ref() {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+}
+
+/// 构建菜单栏托盘：左键显示窗口，菜单提供显示/隐藏桌宠/切换模式/重启/退出。
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let menu = tray_menu(app.handle())?;
     // 托盘专用图标：从 64x64 PNG（macOS 菜单栏 32pt @2x = 64px 甜点尺寸）加载，
     // 优先用 include_bytes 编译期嵌入；加载失败回退 default_window_icon。
     // DeepSeek Harness 图标本身有颜色，不当模板图（icon_as_template=false）。
@@ -1391,13 +1470,14 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     TrayIconBuilder::with_id("dsh-tray")
         .icon(icon)
         .icon_as_template(false)
-        .tooltip("Deepseek Harness")
+        .tooltip("DeepSeek Harness Desktop")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app),
             "pet" => toggle_pet(app),
             "restart" => restart_dsh(app),
+            "toggle-mode" => toggle_desktop_mode(app),
             "quit" => {
                 app.state::<DshState>().quitting.store(true, Ordering::SeqCst);
                 app.exit(0);
@@ -1414,85 +1494,114 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 show_main(tray.app_handle());
             }
         })
-        .build(app)?;
+        .build(app)
+        .map(|tray| {
+            *app.state::<DshState>().tray.lock().unwrap() = Some(tray);
+        })?;
     Ok(())
 }
 
-/// 重启 dsh web 服务（不退出桌面端）：升级为「桌面壳实例」。
-///
-/// 无论当前占用端口的 dsh 是否由本应用 spawn，都会先停掉它（复用外部实例时按端口
-/// 查找其 PID 并 kill，跨平台），再以带桌面 overlay 的新实例重新拉起，从而从
-/// 「降级接入」（复用外部实例、无桌面 chrome）升级为完整桌面 chrome。
+/// 回到内嵌启动加载页（重启/切换模式时，像重启应用一样先回到加载界面）。
+fn navigate_to_loading(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("main") else { return };
+    let url = app
+        .state::<DshState>()
+        .loading_url
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| {
+            #[cfg(target_os = "windows")]
+            {
+                "http://tauri.localhost/index.html".to_string()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                "tauri://localhost/index.html".to_string()
+            }
+        });
+    if let Ok(u) = url.parse::<tauri::Url>() {
+        if let Err(e) = w.navigate(u) {
+            log::warn!("导航回加载页失败：{e}");
+        }
+    } else if let Err(e) = w.eval(&format!("window.location.replace({url:?});")) {
+        log::warn!("导航回加载页失败：{e}");
+    }
+}
+
+/// 重启/切换接入模式（都先回到启动加载页，再停旧实例、按目标模式拉起、重新进入）。
+/// target_mode = MODE_ADVANCED / MODE_COMPAT。
 /// 通知服务器在 setup 阶段就已启动并常驻，重启时复用同一端口/token。
-fn restart_dsh(app: &AppHandle) {
+fn restart_dsh_in_mode(app: &AppHandle, target_mode: u8) {
     let state = app.state::<DshState>();
     if state.restarting.swap(true, Ordering::SeqCst) {
-        log::warn!("已在重启中，忽略重复触发");
+        log::warn!("已在重启/切换中，忽略重复触发");
         return;
     }
-    log::info!("[restart] 托盘触发重启 dsh 服务");
+    let mode_name = if target_mode == MODE_ADVANCED { "高级" } else { "兼容" };
+    log::info!("[restart] 进入{mode_name}模式：回到加载页并重启 dsh 服务");
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        // 0) 回到启动加载页（像重启一样）
+        navigate_to_loading(&handle);
         let port = app_port();
-        // 1) 停掉占用端口的现有 dsh：优先我们的子进程；否则按端口找外部进程 kill
+        // 1) 停掉占用端口的现有 dsh（含自家子进程与外部实例，纯代码）
         if let Some(mut child) = handle.state::<DshState>().child.lock().unwrap().take() {
             let pid = child.id();
             log::info!("[restart] 停止自管 dsh 子进程（PID {pid}）");
             let _ = child.kill();
             let _ = child.wait();
             log::info!("[restart] 旧 dsh 已退出");
-        } else {
-            let pids = listener_pids(port);
-            if pids.is_empty() {
-                log::warn!("[restart] 端口 {port} 没有找到可停止的 dsh 进程");
-            } else {
-                log::info!("[restart] 停止占用 {port} 的外部 dsh 进程：{pids:?}");
-                for pid in pids {
-                    kill_process(pid);
-                }
-            }
         }
-        // 2) 等端口释放（kill 后 SO_REUSEADDR 偶发未及时释放）
-        let mut freed = false;
-        for _ in 0..40 {
-            if !port_open(port) {
-                freed = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        let freed = stop_port_owner(port).await;
         if !freed {
-            log::error!("[restart] 端口 {port} 在 4s 内未释放，重启中止");
-            show_notification(&handle, "Deepseek Harness · 重启失败", &format!("端口 {port} 仍被占用"));
+            log::error!("[restart] 端口 {port} 未能停用/释放，重启中止");
+            show_notification(&handle, "DeepSeek Harness Desktop · 重启失败", &format!("端口 {port} 仍被占用"));
             handle.state::<DshState>().restarting.store(false, Ordering::SeqCst);
             return;
         }
-        // 3) 以带桌面 overlay 的实例重新拉起
-        match spawn_dsh(&handle, port) {
+        // 2) 按目标模式拉起（高级=带 overlay；兼容=不带 overlay、标准布局）
+        let advanced = target_mode == MODE_ADVANCED;
+        match spawn_dsh(&handle, port, advanced) {
             Ok(child) => {
-                let new_pid = child.id();
-                log::info!("[restart] 新 dsh 子进程已启动（PID {new_pid}）");
+                log::info!("[restart] 新 dsh 子进程已启动（PID {}）", child.id());
                 *handle.state::<DshState>().child.lock().unwrap() = Some(child);
                 handle.state::<DshState>().spawned_this_run.store(true, Ordering::SeqCst);
+                handle.state::<DshState>().mode.store(target_mode, Ordering::SeqCst);
             }
             Err(e) => {
                 let msg = match &e {
                     SpawnError::NotFound(s) | SpawnError::Other(s) => s.clone(),
                 };
                 log::error!("[restart] spawn 失败：{msg}");
-                show_notification(&handle, "Deepseek Harness · 重启失败", &format!("spawn 失败：{msg}"));
+                show_notification(&handle, "DeepSeek Harness Desktop · 重启失败", &format!("spawn 失败：{msg}"));
                 handle.state::<DshState>().restarting.store(false, Ordering::SeqCst);
                 return;
             }
         }
-        // 4) 重置失败标志并等待就绪 + 重新导航（此时 advanced=true，桌面 chrome 生效）
+        // 3) 重置失败标志并等待就绪 + 重新导航（按目标模式生成 URL）
         handle.state::<DshState>().spawn_failed.store(false, Ordering::SeqCst);
         let nport = handle.state::<DshState>().notify_port.load(Ordering::SeqCst);
         let ntoken = handle.state::<DshState>().notify_token.lock().unwrap().clone();
         wait_ready_and_navigate(handle.clone(), port, nport, ntoken).await;
         handle.state::<DshState>().restarting.store(false, Ordering::SeqCst);
-        log::info!("[restart] 重启流程完成");
+        // 4) 刷新托盘「切换模式」标签
+        refresh_tray_mode(&handle);
+        log::info!("[restart] {mode_name}模式启动完成");
     });
+}
+
+/// 托盘「重启 dsh 服务」：在当前模式下重启。
+fn restart_dsh(app: &AppHandle) {
+    let mode = app.state::<DshState>().mode.load(Ordering::SeqCst);
+    restart_dsh_in_mode(app, mode);
+}
+
+/// 托盘「切换模式」：兼容 <-> 高级（切换后重启对应的 dsh web）。
+fn toggle_desktop_mode(app: &AppHandle) {
+    let cur = app.state::<DshState>().mode.load(Ordering::SeqCst);
+    let next = if cur == MODE_ADVANCED { MODE_COMPAT } else { MODE_ADVANCED };
+    restart_dsh_in_mode(app, next);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1503,13 +1612,14 @@ pub fn run() {
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::LogDir {
-                        file_name: Some("dsh-desktop".into()),
+                        file_name: Some("dsh-desktop-tauriapp".into()),
                     }),
                 ])
                 .level(log::LevelFilter::Info)
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
+        .plugin(nav_guard_plugin())
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_denylist(&["pet"])
@@ -1526,12 +1636,16 @@ pub fn run() {
             toggle_zoom,
             open_external,
             choose_desktop_mode,
-            get_mode_prompt_needed
+            get_mode_prompt_needed,
+            log_diag
         ])
 .manage(DshState {
             child: Mutex::new(None),
             spawned_this_run: AtomicBool::new(false),
             mode_prompt_needed: AtomicBool::new(false),
+            mode: AtomicU8::new(MODE_ADVANCED),
+            loading_url: Mutex::new(None),
+            tray: Mutex::new(None),
             spawn_failed: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
             quitting: AtomicBool::new(false),
@@ -1547,6 +1661,12 @@ pub fn run() {
             let _ = DESKTOP_OVERLAY.set(desktop_overlay_path(app.handle()));
             let port = app_port();
             let state = app.state::<DshState>();
+            // 记录内嵌加载页 URL（重启/切换模式时回到该页，像重启应用一样）
+            if let Some(w) = app.get_webview_window("main") {
+                if let Ok(u) = w.url() {
+                    *state.loading_url.lock().unwrap() = Some(u.to_string());
+                }
+            }
             // 申请系统通知权限（macOS 弹授权窗；Windows/Linux 幂等确认）。
             // 放在任何 .show() 之前，best-effort 不阻塞启动。
             let handle = app.handle().clone();
@@ -1561,11 +1681,12 @@ pub fn run() {
                 // 即将由本应用拉起 dsh：先确保 web profile 已挂载桌面 chrome 插件
                 //（参考项目机制：检测缺失则用官方 `dsh plugin --profile web add` 装上）。
                 ensure_web_profile_plugin(app.handle());
-                match spawn_dsh(app.handle(), port) {
+                match spawn_dsh(app.handle(), port, true) {
                     Ok(child) => {
                         log::info!("dsh 子进程已启动（PID {}）", child.id());
                         *state.child.lock().unwrap() = Some(child);
                         state.spawned_this_run.store(true, Ordering::SeqCst);
+                        state.mode.store(MODE_ADVANCED, Ordering::SeqCst);
                     }
                     Err(SpawnError::NotFound(e)) => {
                         log::error!("启动 dsh 失败：{e}");
@@ -1602,7 +1723,7 @@ pub fn run() {
                     }
                 });
             }
-            // 窗口拖动完全交由 dsh-desktop-app 插件的 client 端（root slot 里的
+            // 窗口拖动完全交由 dsh-desktop-tauriapp 插件的 client 端（root slot 里的
             // AdvancedFrame）渲染拖拽区并挂 data-tauri-drag-region；这里不再注入
             // 任何脚本，也不再使用 movableByWindowBackground（那会让整窗可拖）。
             // macOS 用 titleBarStyle:Overlay（保留原生红绿灯）；
@@ -1612,7 +1733,7 @@ pub fn run() {
             // - 由桌面壳 spawn（advanced）：macOS 切 Overlay（保留红绿灯 + 自绘拖拽区），
             //   Windows/Linux 隐藏原生标题栏（自绘 caption 行）；
             // - 复用外部实例（compat）：保持默认系统原生标题栏。
-            if state.spawned_this_run.load(Ordering::SeqCst) {
+            if state.spawned_this_run.load(Ordering::SeqCst) && state.mode.load(Ordering::SeqCst) == MODE_ADVANCED {
                 if let Some(w) = app.get_webview_window("main") {
                     #[cfg(target_os = "macos")]
                     if let Err(e) = w.set_title_bar_style(tauri::TitleBarStyle::Overlay) {
@@ -1695,7 +1816,7 @@ pub fn run() {
                         if !state.tray_tip_shown.swap(true, Ordering::SeqCst) {
                             show_notification(
                                 window.app_handle(),
-                                "Deepseek Harness 仍在运行",
+                                "DeepSeek Harness Desktop 仍在运行",
                                 "窗口已隐藏到菜单栏托盘，点击托盘图标可重新打开；托盘菜单可退出。",
                             );
                         }
@@ -1778,6 +1899,9 @@ mod tests {
             child: Mutex::new(None),
             spawned_this_run: AtomicBool::new(false),
             mode_prompt_needed: AtomicBool::new(false),
+            mode: AtomicU8::new(MODE_ADVANCED),
+            loading_url: Mutex::new(None),
+            tray: Mutex::new(None),
             spawn_failed: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
             quitting: AtomicBool::new(false),

@@ -22,14 +22,14 @@ const PLATFORMS = new Set<DesktopClientPlatform>(['darwin', 'win32', 'linux'])
  */
 export function parseDesktopClientEnvironment(search: string): DesktopClientEnvironment | undefined {
   const params = new URLSearchParams(search)
-  const mode = params.get('dsh-desktop-mode')
-  const platform = params.get('dsh-desktop-platform')
+  const mode = params.get('dsh-desktop-tauriapp-mode')
+  const platform = params.get('dsh-desktop-tauriapp-platform')
   if (mode === null && platform === null) return undefined
   if (!MODES.has(mode as DesktopClientMode)) {
-    throw new Error(`dsh-desktop-app: invalid or missing dsh-desktop-mode ${JSON.stringify(mode)}`)
+    throw new Error(`dsh-desktop-tauriapp: invalid or missing dsh-desktop-tauriapp-mode ${JSON.stringify(mode)}`)
   }
   if (!PLATFORMS.has(platform as DesktopClientPlatform)) {
-    throw new Error(`dsh-desktop-app: invalid or missing dsh-desktop-platform ${JSON.stringify(platform)}`)
+    throw new Error(`dsh-desktop-tauriapp: invalid or missing dsh-desktop-tauriapp-platform ${JSON.stringify(platform)}`)
   }
   return { mode: mode as DesktopClientMode, platform: platform as DesktopClientPlatform }
 }
