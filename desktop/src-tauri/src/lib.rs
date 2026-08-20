@@ -1608,12 +1608,17 @@ pub fn run() {
             // macOS 用 titleBarStyle:Overlay（保留原生红绿灯）；
             // Windows/Linux 隐藏原生标题栏（decorations:false），标题栏 UI 由
             // 插件 client 自绘 caption 行 + 窗口按钮。
-            // Windows/Linux：仅当本次由桌面壳 spawn 了带 overlay 的实例（启用桌面
-            // chrome）才隐藏原生标题栏；复用外部实例时保留原生标题栏（降级接入，
-            // 窗口仍可拖动/关闭）。
-            #[cfg(not(target_os = "macos"))]
+            // 标题栏形态跟随接入模式：
+            // - 由桌面壳 spawn（advanced）：macOS 切 Overlay（保留红绿灯 + 自绘拖拽区），
+            //   Windows/Linux 隐藏原生标题栏（自绘 caption 行）；
+            // - 复用外部实例（compat）：保持默认系统原生标题栏。
             if state.spawned_this_run.load(Ordering::SeqCst) {
                 if let Some(w) = app.get_webview_window("main") {
+                    #[cfg(target_os = "macos")]
+                    if let Err(e) = w.set_title_bar_style(tauri::TitleBarStyle::Overlay) {
+                        log::warn!("切换 Overlay 标题栏失败：{e}");
+                    }
+                    #[cfg(not(target_os = "macos"))]
                     if let Err(e) = w.set_decorations(false) {
                         log::warn!("关闭主窗口原生标题栏失败：{e}");
                     }
