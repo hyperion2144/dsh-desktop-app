@@ -23,7 +23,7 @@ atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering},
 };
 
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, RunEvent, WindowEvent,
 };
@@ -55,12 +55,35 @@ fn load_desktop_settings() -> DesktopSettings {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return DesktopSettings::default();
     };
-    match serde_yaml::from_str::<serde_yaml::Value>(&text) {
-        Ok(value) => serde_yaml::from_value(
-            value.get("dsh-desktop-tauriapp").cloned().unwrap_or(serde_yaml::Value::Null),
-        )
-        .unwrap_or_default(),
-        Err(_) => DesktopSettings::default(),
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
+        return DesktopSettings::default();
+    };
+    let selected = value
+        .get("dsh-desktop-tauriapp")
+        .or_else(|| legacy_desktop_block(&value))
+        .cloned()
+        .unwrap_or(serde_yaml::Value::Null);
+    from_yaml_value(selected).unwrap_or_default()
+}
+
+/// 把 YAML Value 反序列化为桌面壳设置（映射缺失字段给默认）。
+fn from_yaml_value(v: serde_yaml::Value) -> Option<DesktopSettings> {
+    serde_yaml::from_value(v).ok()
+}
+
+/// 兼容上一版 bug 写入的 `desktop:` 块：仅当它长得像我们的 schema（含
+/// port/active_profile/remote_addr/remote_list 任一键）时才认领，不影响第三方键。
+fn legacy_desktop_block(value: &serde_yaml::Value) -> Option<&serde_yaml::Value> {
+    let block = value.get("desktop")?;
+    let map = block.as_mapping()?;
+    const OUR_KEYS: [&str; 4] = ["port", "active_profile", "remote_addr", "remote_list"];
+    if OUR_KEYS
+        .iter()
+        .any(|k| map.contains_key(serde_yaml::Value::String((*k).to_string())))
+    {
+        Some(block)
+    } else {
+        None
     }
 }
 
@@ -77,9 +100,22 @@ fn save_desktop_settings(settings: &DesktopSettings) {
     };
     if let Some(map) = root.as_mapping_mut() {
         map.insert(
-            serde_yaml::Value::String("desktop".into()),
+            serde_yaml::Value::String("dsh-desktop-tauriapp".into()),
             serde_yaml::to_value(settings).unwrap_or(serde_yaml::Value::Null),
         );
+        // 迁移清理：删掉上一版 bug 遗留的 `desktop:` 块（仅 schema 匹配时）
+        if let Some(legacy) = map.get(&serde_yaml::Value::String("desktop".into())) {
+            if legacy_desktop_block(&serde_yaml::Value::Mapping(
+                [(serde_yaml::Value::String("desktop".into()), legacy.clone())]
+                    .into_iter()
+                    .collect(),
+            ))
+            .is_some()
+            {
+                map.remove(&serde_yaml::Value::String("desktop".into()));
+                log::info!("settings.yaml 已把遗留 desktop: 块迁移到 dsh-desktop-tauriapp:");
+            }
+        }
     }
     let out = serde_yaml::to_string(&root).unwrap_or_default();
     let tmp = path.with_extension("yaml.tmp");
@@ -186,6 +222,8 @@ struct DshState {
     restarting: AtomicBool,
     /// 是否已至少完成一次就绪导航（守护器只在就绪后介入）。
     ready_once: AtomicBool,
+    /// 输入弹窗的确认通道（prompt_input 挂起，页面 ui_input_confirm 回填）。
+    pending_input: Mutex<Option<tokio::sync::mpsc::UnboundedSender<(String, String)>>>,
     /// 托盘"退出"标志（置位后放行窗口关闭与应用退出）。
     quitting: AtomicBool,
     /// 是否已提示过"隐藏到托盘"。
@@ -202,6 +240,9 @@ struct DshState {
     /// Some = 当前已放大，再双击恢复到此几何）。Mutex 防并发双击。
     pre_zoom_geom: Mutex<Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>>,
 }
+
+/// 运行时放行的远程 dsh 主机清单（托盘「dsh 服务地址」选择后写入，导航守卫读取）。
+static INTERNAL_HOSTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// 设置并广播 dsh 服务状态（写 DshState + emit `dsh-status` 事件）。
 fn set_status(app: &AppHandle, status: u8, detail: &str) {
@@ -430,6 +471,7 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16, _advanced: bool) -> Result<Child
     //（包名行，实体在共享模块池），不禁用 stock ui-layout；仅当设置
     // DSH_DESKTOP_EXTRA_PATCH 调试环境变量时再叠加一个调试 overlay。
     let profile = configured_profile();
+    log::info!("[spawn] 启动 dsh（profile={profile}, port={port}）");
     let mut launcher_args: Vec<std::ffi::OsString> =
         vec!["--profile".into(), profile.into()];
     // 桌面插件经 --patch 注入（包名行，实体在共享模块池，不写 profile bundles）。
@@ -1174,6 +1216,11 @@ async fn wait_ready_and_navigate(app: AppHandle, port: u16, nport: u16, ntoken: 
     let state = app.state::<DshState>();
     // advanced 以当前接入模式为准（高级=带标记桌面 chrome；兼容=标准布局）
     let url = desktop_url(port, state.mode.load(Ordering::SeqCst) == MODE_ADVANCED);
+    // 远程模式：不探测/不 spawn 本地，直接导航远程页面
+    if let Some(addr) = load_desktop_settings().remote_addr {
+        navigate_remote(&app, &addr, state.mode.load(Ordering::SeqCst) == MODE_ADVANCED);
+        return;
+    }
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         if state.spawn_failed.load(Ordering::SeqCst) {
@@ -1518,7 +1565,13 @@ fn navigate_guard(url: &tauri::Url) -> bool {
             let host = url.host_str().unwrap_or("");
             // 内部主机：dsh web（127.0.0.1/::1/localhost）+ Windows 资产协议主机 tauri.localhost
             // （后者若被当外链会触发 cmd start 把 URL 当文件名打开而报「找不到文件」）
-            let internal = host == "127.0.0.1" || host == "::1" || host == "localhost" || host == "tauri.localhost";
+            // + 运行时放行的远程 dsh 主机（托盘「dsh 服务地址」选择后写入）。
+            let runtime_internal = INTERNAL_HOSTS
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|h| h == host);
+            let internal = host == "127.0.0.1" || host == "::1" || host == "localhost" || host == "tauri.localhost" || runtime_internal;
             if internal {
                 return true;
             }
@@ -1569,6 +1622,103 @@ fn restart_dsh_service(app: tauri::AppHandle) -> Result<(), String> {
     let mode = state.mode.load(Ordering::SeqCst);
     restart_dsh_in_mode(&app, mode);
     Ok(())
+}
+
+/// 页面侧输入弹窗回填（确定/取消都到达这里；value 为空视为取消）。
+#[tauri::command]
+async fn ui_input_confirm(
+    state: tauri::State<'_, DshState>,
+    flow: String,
+    value: String,
+) -> Result<(), String> {
+    if let Some(tx) = state.pending_input.lock().unwrap().take() {
+        let _ = tx.send((flow, value));
+    }
+    Ok(())
+}
+
+/// 打开一个内联输入弹窗（主窗口任意页面通用），返回用户输入（取消/超时/空输入 → None）。
+/// flow 用于区分并发场景；最多等待 3 分钟。
+async fn prompt_input(
+    app: &AppHandle,
+    flow: &str,
+    title: &str,
+    placeholder: &str,
+    initial: &str,
+) -> Option<String> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+    *app.state::<DshState>().pending_input.lock().unwrap() = Some(tx);
+    let js = input_modal_js(flow, title, placeholder, initial);
+    if let Some(w) = app.get_webview_window("main") {
+        if w.eval(&js).is_err() {
+            log::warn!("[modal] 在主窗口注入输入弹窗失败：{flow}");
+            app.state::<DshState>().pending_input.lock().unwrap().take();
+            return None;
+        }
+    }
+    match tokio::time::timeout(Duration::from_secs(180), rx.recv()).await {
+        Ok(Some((f, v))) if f == flow && !v.trim().is_empty() => Some(v.trim().to_string()),
+        _ => {
+            app.state::<DshState>().pending_input.lock().unwrap().take();
+            None
+        }
+    }
+}
+
+/// 构造内联输入弹窗 JS（自带样式/焦点/ESC 取消；确定时经 ui_input_confirm 回填）。
+fn input_modal_js(flow: &str, title: &str, placeholder: &str, initial: &str) -> String {
+    let (flow, title, placeholder, initial) = (
+        serde_json::to_string(flow).unwrap_or_default(),
+        serde_json::to_string(title).unwrap_or_default(),
+        serde_json::to_string(placeholder).unwrap_or_default(),
+        serde_json::to_string(initial).unwrap_or_default(),
+    );
+    format!(
+        r#"(function(){{
+  var key = 'dshDesktopInputModal';
+  var old = document.getElementById(key);
+  if (old) old.remove();
+  var overlay = document.createElement('div');
+  overlay.id = key;
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;';
+  var card = document.createElement('div');
+  card.style.cssText = 'background:var(--dsw-alias-bg-layer-1,#1e1e1e);border:1px solid var(--dsw-alias-border-l2,#444);border-radius:12px;padding:18px 20px;min-width:340px;max-width:80vw;box-shadow:0 12px 40px rgba(0,0,0,0.4);color:var(--dsw-alias-label-primary,#eee);';
+  var titleEl = document.createElement('div');
+  titleEl.textContent = {title};
+  titleEl.style.cssText = 'font-size:14px;font-weight:600;margin-bottom:12px;';
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.value = {initial};
+  input.placeholder = {placeholder};
+  input.style.cssText = 'width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2,#444);background:var(--dsw-alias-bg-base,#111);color:var(--dsw-alias-label-primary,#eee);font-size:13px;outline:none;';
+  var row = document.createElement('div');
+  row.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:14px;';
+  var cancel = document.createElement('button');
+  cancel.textContent = '取消';
+  cancel.style.cssText = 'padding:6px 14px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2,#444);background:transparent;color:var(--dsw-alias-label-primary,#eee);font-size:13px;cursor:default;';
+  var ok = document.createElement('button');
+  ok.textContent = '确定';
+  ok.style.cssText = 'padding:6px 14px;border-radius:8px;border:none;background:var(--dsw-alias-state-accent-primary,#3b82f6);color:#fff;font-size:13px;cursor:default;';
+  function submit() {{
+    var value = input.value || '';
+    try {{
+      var t = window.__TAURI_INTERNALS__ || (window.__TAURI__ && window.__TAURI__.core);
+      if (t && t.invoke) t.invoke('ui_input_confirm', {{ flow: {flow}, value: value }}).catch(function(){{}});
+      else window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke('ui_input_confirm', {{ flow: {flow}, value: value }}).catch(function(){{}});
+    }} catch (e) {{}}
+    overlay.remove();
+  }}
+  function cancelNow() {{ try {{ var t = window.__TAURI_INTERNALS__ || (window.__TAURI__ && window.__TAURI__.core); if (t && t.invoke) t.invoke('ui_input_confirm', {{ flow: {flow}, value: '' }}).catch(function(){{}}); }} catch (e) {{}} overlay.remove(); }}
+  ok.addEventListener('click', submit);
+  cancel.addEventListener('click', cancelNow);
+  document.addEventListener('keydown', function esc(e) {{ if (e.key === 'Escape') {{ cancelNow(); document.removeEventListener('keydown', esc); }} if (e.key === 'Enter') {{ submit(); document.removeEventListener('keydown', esc); }} }});
+  row.appendChild(cancel); row.appendChild(ok);
+  card.appendChild(titleEl); card.appendChild(input); card.appendChild(row);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  input.focus(); input.select();
+}})();"#
+    )
 }
 
 /// 用户在启动页选择接入模式（仅复用外部 dsh web 实例时出现）。
@@ -1636,6 +1786,289 @@ fn choose_desktop_mode(app: tauri::AppHandle, mode: String) -> Result<(), String
     }
 }
 
+
+/// 扫描 $DSH_HOME/profiles 下的可 boot-profile（bundles 顺序先 base 后 web-app 才可选）。
+#[derive(serde::Serialize)]
+struct ProfileInfo {
+    name: String,
+    active: bool,
+    selectable: bool,
+}
+
+fn scan_profiles() -> Vec<ProfileInfo> {
+    let active = load_desktop_settings().active_profile.unwrap_or_else(|| "web".into());
+    let mut list = Vec::new();
+    let root = dsh_home().join("profiles");
+    let Ok(entries) = std::fs::read_dir(&root) else { return list };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "node_modules" || !entry.path().is_dir() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(entry.path().join("package.json")) else { continue };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let bundles = value
+            .get("dsh")
+            .and_then(|d| d.get("profile"))
+            .and_then(|p| p.get("bundles"))
+            .and_then(|b| b.as_array());
+        let _ = bundles; // 暂不校验 bundle 顺序：全部 profile 可选（起不起来的会走错误页提示）
+        list.push(ProfileInfo { name: name.clone(), active: name == active, selectable: true });
+    }
+    list
+}
+
+/// 校验 profile 名：仅字母数字下划线连字符，1..=32。
+fn valid_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// 切换 profile：写 settings 后走统一重启流程（spawn 时按新 profile 拉起）。
+fn switch_profile(app: &AppHandle, name: &str) {
+    if !valid_profile_name(name) {
+        show_notification(app, "切换 Profile 失败", "名称不合法");
+        return;
+    }
+    let mut settings = load_desktop_settings();
+    if settings.active_profile.as_deref() == Some(name) {
+        return;
+    }
+    settings.active_profile = Some(name.to_string());
+    save_desktop_settings(&settings);
+    log::info!("[tray] 切换 profile -> {name}");
+    let mode = app.state::<DshState>().mode.load(Ordering::SeqCst);
+    restart_dsh_in_mode(app, mode);
+}
+
+/// 执行 `dsh plugin --profile <name> add <pkg>`（Windows 走 node<bin.js>）。
+fn run_profile_plugin_add(profile: &str, pkg: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let Some(node) = find_node() else { return false };
+        let Some(js) = find_dsh_bin_js() else { return false };
+        std::process::Command::new(node)
+            .arg(&js)
+            .args(["plugin", "--profile", profile, "add", "--config.minimumReleaseAge=0"])
+            .arg(pkg)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let Some(dsh) = find_dsh_bin() else { return false };
+        std::process::Command::new(&dsh)
+            .args(["plugin", "--profile", profile, "add", "--config.minimumReleaseAge=0"])
+            .arg(pkg)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+/// 新建 profile 流程：弹窗输入名称 → plugin add base + web-app。
+fn create_profile_flow(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(name) = prompt_input(&handle, "new-profile", "新建 Profile", "profile 名称（字母/数字/_/-）", "").await else {
+            return;
+        };
+        if !valid_profile_name(&name) {
+            show_notification(&handle, "新建 Profile 失败", "名称仅允许字母、数字、_ 与 -（1-32 字符）");
+            return;
+        }
+        if dsh_home().join("profiles").join(&name).exists() {
+            show_notification(&handle, "新建 Profile 失败", &format!("{name} 已存在"));
+            return;
+        }
+        let name_for_cmd = name.clone();
+        let failed = tauri::async_runtime::spawn_blocking(move || {
+            for pkg in ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] {
+                if !run_profile_plugin_add(&name_for_cmd, pkg) {
+                    return Some(pkg.to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap_or(Some("安装任务异常".into()));
+        match failed {
+            None => {
+                log::info!("[tray] 新建 profile 成功：{name}");
+                show_notification(&handle, "新建 Profile 成功", &format!("{name} 已创建（未自动切换）"));
+            }
+            Some(pkg) => {
+                log::error!("[tray] 新建 profile 失败：{pkg}");
+                show_notification(&handle, "新建 Profile 失败", &format!("{pkg} 安装失败，请查看日志"));
+            }
+        }
+        refresh_tray_mode(&handle);
+    });
+}
+
+
+/// 归一化远程地址：去 scheme、拒绝路径/凭据，端口默认 3080。
+fn normalize_remote(addr: &str) -> Option<String> {
+    let mut a = addr.trim().to_string();
+    for prefix in ["http://", "https://"] {
+        if let Some(rest) = a.strip_prefix(prefix) {
+            a = rest.to_string();
+        }
+    }
+    if a.is_empty() || a.contains('/') || a.contains('@') || a.contains(' ') || a.contains('?') || a.contains('#') {
+        return None;
+    }
+    match a.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
+            if h.is_empty() { None } else { Some(format!("{h}:{p}")) }
+        }
+        _ => Some(format!("{a}:3080")),
+    }
+}
+
+/// 选择远程/本地服务来源：写 settings 后按来源重启。
+fn select_remote(app: &AppHandle, addr: Option<String>) {
+    let mut settings = load_desktop_settings();
+    settings.remote_addr = addr;
+    save_desktop_settings(&settings);
+    if let Some(a) = settings.remote_addr.as_deref() {
+        let host = a.split(':').next().unwrap_or(a).to_string();
+        let mut list = INTERNAL_HOSTS.lock().unwrap();
+        if !list.contains(&host) {
+            list.push(host);
+        }
+        log::info!("[tray] 切换 dsh 服务地址 -> 远程 {a}");
+    } else {
+        log::info!("[tray] 切换 dsh 服务地址 -> 本地");
+    }
+    let mode = app.state::<DshState>().mode.load(Ordering::SeqCst);
+    restart_dsh_in_mode(app, mode);
+}
+
+/// 新增远程地址流程：弹窗输入 host[:port] → 校验 → 存入列表并选中。
+fn add_remote_flow(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(input) = prompt_input(&handle, "add-remote", "新增 dsh 服务地址", "host[:port]，如 192.168.1.10:3080", "").await else {
+            return;
+        };
+        let Some(addr) = normalize_remote(&input) else {
+            show_notification(&handle, "新增地址失败", "格式应为 host[:port]，不允许含路径/凭据");
+            return;
+        };
+        let mut settings = load_desktop_settings();
+        if !settings.remote_list.contains(&addr) {
+            settings.remote_list.push(addr.clone());
+        }
+        save_desktop_settings(&settings);
+        log::info!("[tray] 新增远程 dsh 地址：{addr}（未切换，请在菜单中手动选择）");
+        refresh_tray_mode(&handle);
+    });
+}
+
+/// 删除远程地址（当前选中项自动回本地）。
+fn remove_remote_flow(app: &AppHandle, addr: &str) {
+    let mut settings = load_desktop_settings();
+    settings.remote_list.retain(|a| a != addr);
+    if settings.remote_addr.as_deref() == Some(addr) {
+        settings.remote_addr = None;
+    }
+    save_desktop_settings(&settings);
+    log::info!("[tray] 删除远程 dsh 地址：{addr}");
+    refresh_tray_mode(app);
+}
+
+/// 设置本地端口流程：弹窗输入 → 校验 → 保存 →（本地模式）重启生效。
+fn set_port_flow(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let current = configured_port().to_string();
+        let Some(input) = prompt_input(&handle, "set-port", "设置本地 dsh web 端口", "端口（1-65535）", &current).await else {
+            return;
+        };
+        let Ok(port) = input.parse::<u16>() else {
+            show_notification(&handle, "设置端口失败", "请输入 1-65535 的整数");
+            return;
+        };
+        if port == 0 {
+            show_notification(&handle, "设置端口失败", "端口不能为 0");
+            return;
+        }
+        let mut settings = load_desktop_settings();
+        settings.port = Some(port);
+        save_desktop_settings(&settings);
+        log::info!("[tray] 本地端口 -> {port}");
+        if settings.remote_addr.is_some() {
+            show_notification(&handle, "端口已保存", &format!("{port} 将在本地模式生效"));
+        } else {
+            let mode = handle.state::<DshState>().mode.load(Ordering::SeqCst);
+            restart_dsh_in_mode(&handle, mode);
+        }
+        refresh_tray_mode(&handle);
+    });
+}
+
+/// 远程首页是否挂载了本插件的 client（GET / 并从响应里检索挂载串）。
+fn remote_has_plugin(addr: &str) -> bool {
+    use std::io::{Read, Write};
+    let Ok(mut stream) = std::net::TcpStream::connect(addr) else { return false };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let req = format!("GET / HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = Vec::with_capacity(65536);
+    let mut tmp = [0u8; 8192];
+    loop {
+        match stream.read(&mut tmp) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() >= 65536 {
+                    break;
+                }
+            }
+        }
+    }
+    String::from_utf8_lossy(&buf).contains("/plugins/dsh-desktop-tauriapp/client.js")
+}
+
+/// 导航到远程 dsh 页面（高级=带标记；远程缺插件时提示建议切兼容，不阻塞）。
+fn navigate_remote(app: &AppHandle, addr: &str, advanced: bool) {
+    let host = addr.split(':').next().unwrap_or(addr).to_string();
+    {
+        let mut list = INTERNAL_HOSTS.lock().unwrap();
+        if !list.contains(&host) {
+            list.push(host);
+        }
+    }
+    if advanced && !remote_has_plugin(addr) {
+        log::warn!("[remote] 远程未检测到 dsh-desktop-tauriapp 插件，建议使用兼容模式");
+        show_notification(app, "远程 dsh 未安装桌面插件", "高级模式需要远程安装 dsh-desktop-tauriapp，建议改用兼容模式");
+    }
+    let url = if advanced {
+        let platform = if cfg!(target_os = "macos") {
+            "darwin"
+        } else if cfg!(target_os = "windows") {
+            "win32"
+        } else {
+            "linux"
+        };
+        format!("http://{addr}/?dsh-desktop-tauriapp-mode=advanced&dsh-desktop-tauriapp-platform={platform}")
+    } else {
+        format!("http://{addr}/")
+    };
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.eval(&format!("window.location.replace({url:?});"));
+    }
+    log::info!("已导航到远程 dsh：{url}");
+    set_status(app, STATUS_REMOTE, &format!("远程 {addr}"));
+    app.state::<DshState>().ready_once.store(true, Ordering::SeqCst);
+}
+
 /// 按当前接入模式构建托盘菜单（含「切换模式」项，标签显示当前模式）。
 fn tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let advanced = app.state::<DshState>().mode.load(Ordering::SeqCst) == MODE_ADVANCED;
@@ -1646,10 +2079,57 @@ fn tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     };
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let pet = MenuItem::with_id(app, "pet", "显示/隐藏桌宠", true, None::<&str>)?;
+    let settings = load_desktop_settings();
+    let active_remote = settings.remote_addr.clone();
+    let port = configured_port();
+
+    // dsh 服务地址 ▸
+    let local_label = if active_remote.is_none() { "✓ 本地".to_string() } else { "本地".to_string() };
+    let local_item = MenuItem::with_id(app, "remote:local", local_label, true, None::<&str>)?;
+    let mut remote_builder = SubmenuBuilder::new(app, "dsh 服务地址");
+    remote_builder = remote_builder.item(&local_item);
+    for addr in &settings.remote_list {
+        let label = if active_remote.as_deref() == Some(addr) {
+            format!("✓ {addr}")
+        } else {
+            addr.clone()
+        };
+        let item = MenuItem::with_id(app, format!("remote-set:{addr}"), label, true, None::<&str>)?;
+        remote_builder = remote_builder.item(&item);
+    }
+    remote_builder = remote_builder.separator();
+    let add_item = MenuItem::with_id(app, "remote-add", "新增地址…", true, None::<&str>)?;
+    remote_builder = remote_builder.item(&add_item);
+    if !settings.remote_list.is_empty() {
+        let mut del_builder = SubmenuBuilder::new(app, "删除地址");
+        for addr in &settings.remote_list {
+            let item = MenuItem::with_id(app, format!("remote-del:{addr}"), addr.clone(), true, None::<&str>)?;
+            del_builder = del_builder.item(&item);
+        }
+        remote_builder = remote_builder.items(&[&del_builder.build()?]);
+    }
+    let remote_menu = remote_builder.build()?;
+
+    // Profile ▸
+    let mut profile_builder = SubmenuBuilder::new(app, "Profile");
+    for p in scan_profiles() {
+        let label = if p.active { format!("✓ {}", p.name) } else { p.name.clone() };
+        let item = MenuItem::with_id(app, format!("profile:{}", p.name), label, p.selectable, None::<&str>)?;
+        profile_builder = profile_builder.item(&item);
+    }
+    profile_builder = profile_builder.separator();
+    let new_profile = MenuItem::with_id(app, "new-profile", "新建 Profile…", true, None::<&str>)?;
+    profile_builder = profile_builder.item(&new_profile);
+    let profile_menu = profile_builder.build()?;
+
+    let port_item = MenuItem::with_id(app, "set-port", format!("本地端口… {port}"), true, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle-mode", toggle_label, true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "重启 dsh 服务", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出 DeepSeek Harness Desktop", true, None::<&str>)?;
-    Ok(Menu::with_items(app, &[&show, &pet, &toggle, &restart, &quit])?)
+    Ok(Menu::with_items(
+        app,
+        &[&show, &pet, &remote_menu, &profile_menu, &port_item, &restart, &toggle, &quit],
+    )?)
 }
 
 /// 刷新托盘「切换模式」标签（模式切换/重启后调用）。
@@ -1688,6 +2168,19 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "pet" => toggle_pet(app),
             "restart" => restart_dsh(app),
             "toggle-mode" => toggle_desktop_mode(app),
+            "remote:local" => select_remote(app, None),
+            "remote-add" => add_remote_flow(app),
+            "new-profile" => create_profile_flow(app),
+            "set-port" => set_port_flow(app),
+            id if id.starts_with("profile:") => {
+                switch_profile(app, &id["profile:".len()..]);
+            }
+            id if id.starts_with("remote-set:") => {
+                select_remote(app, Some(id["remote-set:".len()..].to_string()));
+            }
+            id if id.starts_with("remote-del:") => {
+                remove_remote_flow(app, &id["remote-del:".len()..]);
+            }
             "quit" => {
                 app.state::<DshState>().quitting.store(true, Ordering::SeqCst);
                 app.exit(0);
@@ -1874,7 +2367,8 @@ pub fn run() {
             get_mode_prompt_needed,
             log_diag,
             get_dsh_status,
-            restart_dsh_service
+            restart_dsh_service,
+            ui_input_confirm
         ])
 .manage(DshState {
             child: Mutex::new(None),
@@ -1887,6 +2381,7 @@ pub fn run() {
             spawn_failed: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
             ready_once: AtomicBool::new(false),
+            pending_input: Mutex::new(None),
             quitting: AtomicBool::new(false),
             tray_tip_shown: AtomicBool::new(false),
             unread: AtomicU32::new(0),
@@ -2231,6 +2726,7 @@ mod tests {
             spawn_failed: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
             ready_once: AtomicBool::new(false),
+            pending_input: Mutex::new(None),
             quitting: AtomicBool::new(false),
             tray_tip_shown: AtomicBool::new(false),
             unread: AtomicU32::new(0),

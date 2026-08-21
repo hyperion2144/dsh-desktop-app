@@ -19,6 +19,7 @@
     "allow-log-diag",
     "allow-get-dsh-status",
     "allow-restart-dsh-service",
+    "allow-ui-input-confirm",
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "core:window:allow-minimize",

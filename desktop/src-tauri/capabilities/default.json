@@ -13,6 +13,7 @@
     "allow-get-mode-prompt-needed",
     "allow-get-dsh-status",
     "allow-restart-dsh-service",
+    "allow-ui-input-confirm",
     "allow-pet-show-main",
     "allow-pet-hide",
     "allow-pet-quit",
