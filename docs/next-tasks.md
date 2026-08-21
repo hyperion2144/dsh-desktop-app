@@ -7,7 +7,7 @@
 
 - **项目**：`dsh-desktop-tauriapp`「DeepSeek Harness Desktop Desktop」——把 DeepSeek Harness 封装成 Tauri 2 桌面应用的**技能包 + 参考实现**。
 - **本地位置**：`/Users/Admin/Desktop/dsh-desktop-tauriapp`（唯一开发源）
-- **远程**：GitHub `happpsee/dsh-desktop-tauriapp`；npm 包 `dsh-desktop-tauriapp`（0.3.0 已发布）
+- **远程**：GitHub `hyperion2144/dsh-desktop-tauriapp`；npm 包 `dsh-desktop-tauriapp`（当前 0.6.0）
 - **现状**：已被 awesome-dsh-plugin 收录（PR #695 合并）、Rust 单测 5 项全绿、mac 产物 0.3.0
 - **技术栈**：Tauri 2 + Rust（核心在 `desktop/src-tauri/src/lib.rs`，约 850 行）；前端壳 `desktop/src/`（index.html/error.html/styles.css/icon.png）；技能包 `skill/SKILL.md` + `skill/resources/`
 

@@ -4,7 +4,9 @@
 [![npm](https://img.shields.io/npm/v/dsh-desktop-tauriapp)](https://www.npmjs.com/package/dsh-desktop-tauriapp)
 
 > 主人好呀～ 这是 **DeepSeek Harness Desktop** 桌面客户端仓库，把 DeepSeek Harness Web GUI 封装成 macOS/Windows 桌面应用。一键启动、托盘常驻、退出自动回收子进程。
-> 一键安装：`dsh plugin add dsh-desktop-tauriapp`（npm）或 `dsh plugin add github:happpsee/dsh-desktop-tauriapp`（GitHub），主人家的 agent 就学会「把 DSH 封装成桌面应用」的手艺了呢～
+> 一键安装：`dsh plugin add dsh-desktop-tauriapp`（npm）或 `dsh plugin add github:hyperion2144/dsh-desktop-tauriapp`（GitHub），主人家的 agent 就学会「把 DSH 封装成桌面应用」的手艺了呢～
+
+> **来源与致谢**：本仓库 fork 自 [happpsee/dsh-desktop-app](https://github.com/happpsee/dsh-desktop-app)，现由 [hyperion2144/dsh-desktop-tauriapp](https://github.com/hyperion2144/dsh-desktop-tauriapp) 独立演进维护；感谢原作者的开创性工作。
 
 这个仓库把 DeepSeek Harness 做成桌面端（macOS + Windows 双平台），主要看点：
 
@@ -19,26 +21,38 @@
 - 应用展示名：**DeepSeek Harness Desktop**（与已安装的 `DeepSeek Harness.app` 保持一致）
 - 技术标识：ASCII 的 `dsh-desktop-tauriapp` / `dsh-desktop-tauriapp` / `com.arcreel.dsh-desktop-tauriapp`
 - 应用图标：复用已安装的 `DeepSeek Harness.app` 的 `icon.icns`（保真度最高的 macOS icns）
-- 应用内左上角图标：保留 DSH Web GUI 原始样式；桌面 chrome（拖拽条/标题栏占位/窗口按钮）由内置 `dsh-desktop-tauriapp` 插件的 client 提供——应用启动时自动把插件挂进 web profile（走官方 `dsh plugin --profile web add`，幂等检测），窗口加载 URL 带 `dsh-desktop-tauriapp-mode=advanced&dsh-desktop-tauriapp-platform=<平台>` 标记，插件 client 借此接管 root slot 渲染拖拽区/标题栏；普通浏览器访问不激活、不受影响
+- 应用内左上角图标：保留 DSH Web GUI 原始样式；桌面 chrome（拖拽区/状态条/窗口按钮）由内置 `dsh-desktop-tauriapp` 插件的 client 提供——应用启动时把插件经 `--patch` 注入 dsh web profile（实体挂共享模块池，不写 profile bundles），窗口加载 URL 带 `dsh-desktop-tauriapp-mode=advanced&dsh-desktop-tauriapp-platform=<平台>` 标记，插件 client 在标准布局内注入局部拖拽区/状态条（不禁用 stock ui-layout）；普通浏览器访问不激活、不受影响
 
 ## 特性
 
-- **一键启动**：双击 app → 探测本地 dsh web（默认 127.0.0.1:3080，`DSH_DESKTOP_PORT`
-  覆盖；`dsh` 升级后默认会打开系统浏览器，桌面壳 spawn 时带 `--no-open` 关闭）。空闲则由本应用
-  拉起带桌面 overlay 的实例并直接启用桌面 chrome；已有实例时，启动页弹「兼容/高级」模式选择：
+- **一键启动**：双击 app → 探测本地 dsh web（默认 127.0.0.1:3080，端口可在托盘「本地端口…」
+  修改，`DSH_DESKTOP_PORT` 环境变量优先；`dsh` 升级后默认会打开系统浏览器，桌面壳 spawn 时带
+  `--no-open` 关闭）。空闲则由本应用按配置的 profile/端口拉起实例并直接启用桌面 chrome；
+  已有实例时，启动页弹「兼容/高级」模式选择：
   - **兼容模式**：复用外部实例、标准布局、系统原生标题栏（不启用桌面 chrome，浏览器不影响）
-  - **高级模式**：先停用占用端口的现有 dsh（含外部/终端进程），再以桌面 overlay 实例重启、
+  - **高级模式**：先停用占用端口的现有 dsh（含外部/终端进程），再按配置拉起桌面壳实例、
     启用完整桌面 chrome
   退出只回收自己拉起的实例
+- **进程守护（0.6.0）**：连接级健康探测（TCP 连不上才判异常），异常自动回启动页并重建；自愈 3 次
+  封顶、自动重启冷却 60s；复用外部实例/远程只提示不代拉。侧边栏底部整行状态条实时显示运行状态
+  （重启走托盘，状态条不承担点击）
+- **托盘三件套（0.6.0）**：`Profile ▸` 二级菜单（扫描/切换/新建）、`dsh 服务地址 ▸`（本地/
+  远程列表/新增/删除）、「本地端口…」；配置持久化于 `$DSH_HOME/settings.yaml` 的
+  `dsh-desktop-tauriapp:` 键（只读写该键，其余内容不动）
+- **远程 dsh（0.6.0）**：可切换到任意远程 dsh 地址；高级模式需要远程已安装本插件，缺则提示建议
+  切兼容模式；远程只做可达性检测、不代拉不重启
 - **托盘常驻**：关闭窗口仅隐藏（首次有通知提示），托盘左键唤起、菜单退出；
   拦截 Cmd+Q 防误退
 - **托盘「重启 dsh 服务」**：会停掉当前占用端口的实例（含复用的外部实例，例如终端/浏览器
-  起的 dsh web），再以带桌面 overlay 的桌面壳实例重启，从而从「降级接入」升级为完整桌面 chrome
+  起的 dsh web），再按当前配置（profile/端口/本地或远程）重建服务；远程模式下则重新导航远程页面
 - **进程回收**：只回收本次启动 spawn 的 dsh 子进程，stdout/stderr 落盘日志
 - **单实例**：重复双击聚焦已有窗口，不会拉起第二个服务
 - **窗口状态记忆**：位置与大小自动恢复
-- **桌面 chrome（插件式，参考 dsh-plugin-desktop 实现）**：由内置 `dsh-desktop-tauriapp` 插件 client（`src/client/`，构建产物 `lib/client.js`）接管 dsh web 的 root slot，按平台渲染——macOS `titleBarStyle: Overlay` 保留原生红绿灯 + sidebar 顶部空白拖拽区（`data-tauri-drag-region` 原生拖拽，`core:window` 权限经 remote capability 放行）；Windows/Linux 用 `decorations:false` 隐藏系统标题栏，client 自绘 caption 行 + 最小化/最大化/关闭按钮；布局/配色全部跟随主题 token（`--dsw-alias-bg-base` 等），无硬编码、可换主题；macOS Overlay 顶部原生标题栏材质属系统标准行为
-- **自动接线 web profile**：应用启动（需拉起 dsh 时）检测 `~/.dsh/profiles/web` 是否已挂 `dsh-desktop-tauriapp`，缺失则用官方 `dsh plugin --profile web add <spec>` 装入（幂等，代码内完成、不手工改配置）；`<spec>` 指向**内嵌在 app 内的插件副本**（见下条「内嵌插件跨平台路径」）；spawn 时带内置 overlay `--patch` 禁用 stock `ui-layout`，让桌面 root slot 接管布局，浏览器 GUI 不受影响
+- **桌面 chrome（插件式，参考 dsh-plugin-desktop 实现）**：由内置 `dsh-desktop-tauriapp` 插件 client（`src/client/`，构建产物 `lib/client.js`）在标准布局内**局部注入**（不禁用 stock ui-layout）——macOS `titleBarStyle: Overlay` 保留原生红绿灯 + 侧栏区域拖拽；Windows/Linux 用 `decorations:false` 隐藏系统标题栏，中间 header 区域自绘 caption 行 + 最小化/最大化/关闭按钮；布局/配色全部跟随主题 token，无硬编码；另注入设置弹窗 tab 列滚动等样式修复（稳定标记定位，不依赖 hash 类名）
+- **插件注入（--patch 方式）**：应用启动（需拉起 dsh 时）把内置插件实体的符号链接挂入共享模块池
+  `$DSH_HOME/profiles/node_modules`（Windows 退化为实体复制），并迁移历史 `plugin add` 写入的
+  profile bundle 注册；spawn 时传 `--patch` 注入清单（包名行）——不写 profile bundles、不禁用
+  stock ui-layout，浏览器 GUI 不受影响
 - **内嵌插件跨平台路径**：`dsh-desktop-tauriapp` 打包时经 `bundle.resources` 内嵌进安装包——
   macOS 落在 `Contents/Resources/dsh-desktop-tauriapp`、Windows 落在可执行文件所在安装目录、
   Linux 落在 `/usr/lib/<应用>`（deb）或 AppImage 挂载点；运行时统一用 `app.path().resource_dir()`

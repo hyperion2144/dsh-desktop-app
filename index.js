@@ -1,6 +1,6 @@
 // dsh-desktop-tauriapp bundle：注册「DSH 桌面壳」技能（SKILL.md 正文内联）。
 // 完整参考实现（Rust 源码、脚本、审计报告）在 GitHub 仓库：
-// https://github.com/happpsee/dsh-desktop-tauriapp
+// 本仓库 fork 自 happpsee/dsh-desktop-app，现独立演进；完整参考实现见 https://github.com/hyperion2144/dsh-desktop-tauriapp
 
 export const name = 'dsh-desktop-tauriapp'
 
@@ -9,7 +9,7 @@ const CONTENT = [
   '',
   '把 DeepSeek Harness Web GUI 封装成 Tauri 2 桌面应用（macOS + Windows 双平台）：',
   '双击启动 → 自动拉起本地 `dsh web` → 窗口加载 Web GUI → 托盘常驻 → 退出回收子进程。',
-  '完整源码与脚本见 https://github.com/happpsee/dsh-desktop-tauriapp （desktop/ 源码、skill/ 技能包、docs/ 审计报告）。',
+  '完整源码与脚本见 https://github.com/hyperion2144/dsh-desktop-tauriapp （desktop/ 源码、skill/ 技能包、docs/ 审计报告；原 fork 自 happpsee/dsh-desktop-app）。',
   '',
   '## 一、安装 DeepSeek Harness（前提，分平台）',
   '',
@@ -78,7 +78,7 @@ const CONTENT = [
   '## 七、桌面端与会话的关系',
   '',
   '桌面壳与浏览器/终端共用同一个 dsh web（单实例、同后端、同会话存储 ~/.dsh）；由桌面壳拉起的实例带桌面 overlay 启用桌面 chrome，复用的外部实例降级接入；托盘「重启 dsh 服务」可切换到桌面壳实例。避免两边同时操作同一会话。',
-  '完整 SKILL.md 与实测审计见仓库 https://github.com/happpsee/dsh-desktop-tauriapp',
+  '完整 SKILL.md 与实测审计见仓库 https://github.com/hyperion2144/dsh-desktop-tauriapp',
 ].join('\n')
 
 export function apply(ctx) {
