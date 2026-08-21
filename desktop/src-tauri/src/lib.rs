@@ -1268,18 +1268,24 @@ fn open_external_impl(url: &str) -> bool {
 
 #[cfg(target_os = "windows")]
 fn open_external_impl(url: &str) -> bool {
-    use std::os::windows::process::CommandExt;
-    // cmd 里 URL 的 `&` 会被当作命令分隔符，必须整体加引号（内层双引号转单引号）
-    let quoted = format!("\"{}\x22", url.replace('"', "'"));
-    std::process::Command::new("cmd")
-        .arg("/C")
-        .arg("start")
-        .arg("")
-        .arg(&quoted)
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    // 走 ShellExecuteW（系统 Shell 按协议路由到默认浏览器/邮件客户端），不用
+    // cmd start：cmd 会把 URL 里的 & 当命令分隔符，且 Rust Command 对含引号参数
+    // 会二次转义，导致 URL 被搞坏、静默打不开。ShellExecuteW 返回值 >32 表示成功。
+    let verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    let file: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    (result as isize) > 32
 }
 
 #[cfg(target_os = "linux")]
