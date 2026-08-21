@@ -1,0 +1,10 @@
+{
+  "name": "dsh-mobile-shell-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "description": "手机壳 H5 前端（Android/iOS 共用）核心逻辑"
+}

@@ -1,0 +1,28 @@
+{
+  "name": "dsh-mobile-access",
+  "version": "0.1.0",
+  "description": "手机访问服务：Host/Origin 改写反代 + 配对（扫码/输入地址）+ SSE 设备会话 + cloudflared 隧道（DeepSeek Harness Desktop 内置包）",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "exports": {
+    ".": {
+      "default": "./lib/index.mjs"
+    },
+    "./client": {
+      "default": "./client/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}

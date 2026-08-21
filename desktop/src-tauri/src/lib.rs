@@ -2679,7 +2679,7 @@ pub fn run() {
 }
 
 #[cfg(test)]
-mod tests {
+mod unit_tests {
     use super::*;
 
     #[test]
@@ -2759,3 +2759,35 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn legacy_desktop_block_claims_our_schema() {
+    let v: serde_yaml::Value = serde_yaml::from_str("desktop:\n  port: 3081\n  active_profile: web\n").unwrap();
+    assert!(legacy_desktop_block(&v).is_some());
+  }
+
+  #[test]
+  fn legacy_desktop_block_ignores_foreign_blocks() {
+    let v: serde_yaml::Value = serde_yaml::from_str("desktop-launcher:\n  enabled: false\n  announceToAgent: false\n").unwrap();
+    assert!(legacy_desktop_block(&v).is_none());
+  }
+
+  #[test]
+  fn desktop_settings_serde_roundtrip() {
+    let s = DesktopSettings {
+      port: Some(3081),
+      active_profile: Some("web".into()),
+      remote_addr: None,
+      remote_list: vec!["x.cn:3091".into()],
+    };
+    let y = serde_yaml::to_string(&s).unwrap();
+    let back: DesktopSettings = serde_yaml::from_str(&y).unwrap();
+    assert_eq!(back.port, Some(3081));
+    assert_eq!(back.active_profile.as_deref(), Some("web"));
+    assert_eq!(back.remote_list, vec!["x.cn:3091".to_string()]);
+  }
+}
