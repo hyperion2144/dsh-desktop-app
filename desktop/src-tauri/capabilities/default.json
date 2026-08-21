@@ -6,6 +6,15 @@
   "permissions": [
     "core:default",
     "notification:default",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "allow-open-external",
+    "allow-log-diag",
+    "allow-choose-desktop-mode",
+    "allow-get-mode-prompt-needed",
+    "allow-pet-show-main",
+    "allow-pet-hide",
+    "allow-pet-quit",
+    "allow-pet-toggle-passthrough",
+    "allow-toggle-zoom"
   ]
 }

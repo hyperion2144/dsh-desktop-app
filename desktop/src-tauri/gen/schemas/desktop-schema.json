@@ -177,6 +177,60 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "允许加载页切换兼容/高级接入模式",
+          "type": "string",
+          "const": "allow-choose-desktop-mode",
+          "markdownDescription": "允许加载页切换兼容/高级接入模式"
+        },
+        {
+          "description": "允许加载页轮询模式选择提示状态",
+          "type": "string",
+          "const": "allow-get-mode-prompt-needed",
+          "markdownDescription": "允许加载页轮询模式选择提示状态"
+        },
+        {
+          "description": "允许桌面 client 把诊断信息写入应用日志",
+          "type": "string",
+          "const": "allow-log-diag",
+          "markdownDescription": "允许桌面 client 把诊断信息写入应用日志"
+        },
+        {
+          "description": "允许在外链点击/导航守卫中通过系统默认浏览器/应用打开 http/https/mailto/tel（桌面壳）",
+          "type": "string",
+          "const": "allow-open-external",
+          "markdownDescription": "允许在外链点击/导航守卫中通过系统默认浏览器/应用打开 http/https/mailto/tel（桌面壳）"
+        },
+        {
+          "description": "允许隐藏桌宠窗口",
+          "type": "string",
+          "const": "allow-pet-hide",
+          "markdownDescription": "允许隐藏桌宠窗口"
+        },
+        {
+          "description": "允许桌宠触发退出应用",
+          "type": "string",
+          "const": "allow-pet-quit",
+          "markdownDescription": "允许桌宠触发退出应用"
+        },
+        {
+          "description": "允许桌宠唤起主窗口",
+          "type": "string",
+          "const": "allow-pet-show-main",
+          "markdownDescription": "允许桌宠唤起主窗口"
+        },
+        {
+          "description": "允许桌宠切换鼠标穿透",
+          "type": "string",
+          "const": "allow-pet-toggle-passthrough",
+          "markdownDescription": "允许桌宠切换鼠标穿透"
+        },
+        {
+          "description": "允许切换缩放",
+          "type": "string",
+          "const": "allow-toggle-zoom",
+          "markdownDescription": "允许切换缩放"
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

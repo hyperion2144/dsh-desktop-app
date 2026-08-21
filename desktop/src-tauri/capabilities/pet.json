@@ -6,6 +6,11 @@
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
-    "core:window:allow-set-ignore-cursor-events"
+    "core:window:allow-set-ignore-cursor-events",
+    "allow-pet-show-main",
+    "allow-pet-hide",
+    "allow-pet-quit",
+    "allow-pet-toggle-passthrough",
+    "allow-toggle-zoom"
   ]
 }

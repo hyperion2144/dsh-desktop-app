@@ -1,0 +1,44 @@
+[[permission]]
+identifier = "allow-open-external"
+description = "允许在外链点击/导航守卫中通过系统默认浏览器/应用打开 http/https/mailto/tel（桌面壳）"
+commands = { allow = ["open_external"] }
+
+[[permission]]
+identifier = "allow-log-diag"
+description = "允许桌面 client 把诊断信息写入应用日志"
+commands = { allow = ["log_diag"] }
+
+[[permission]]
+identifier = "allow-choose-desktop-mode"
+description = "允许加载页切换兼容/高级接入模式"
+commands = { allow = ["choose_desktop_mode"] }
+
+[[permission]]
+identifier = "allow-get-mode-prompt-needed"
+description = "允许加载页轮询模式选择提示状态"
+commands = { allow = ["get_mode_prompt_needed"] }
+
+[[permission]]
+identifier = "allow-pet-show-main"
+description = "允许桌宠唤起主窗口"
+commands = { allow = ["pet_show_main"] }
+
+[[permission]]
+identifier = "allow-pet-hide"
+description = "允许隐藏桌宠窗口"
+commands = { allow = ["pet_hide"] }
+
+[[permission]]
+identifier = "allow-pet-quit"
+description = "允许桌宠触发退出应用"
+commands = { allow = ["pet_quit"] }
+
+[[permission]]
+identifier = "allow-pet-toggle-passthrough"
+description = "允许桌宠切换鼠标穿透"
+commands = { allow = ["pet_toggle_passthrough"] }
+
+[[permission]]
+identifier = "allow-toggle-zoom"
+description = "允许切换缩放"
+commands = { allow = ["toggle_zoom"] }
