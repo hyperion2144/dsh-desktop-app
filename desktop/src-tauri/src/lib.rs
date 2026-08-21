@@ -1292,7 +1292,9 @@ fn open_external_impl(url: &str) -> bool {
 }
 /// 原生导航守卫：拦截 webview 里的一切主框架导航（参考项目 Electron will-frame-navigate）。
 /// - 放行：非 http/https scheme（tauri:// 本地加载页、about:、file:、data: 等壳内/本地），
-///   以及内部主机（127.0.0.1 / ::1 / localhost）的 http(s) —— 桌面壳自管的 dsh web；
+///   以及内部主机的 http(s) —— 桌面壳自管的 dsh web 与 Windows 资产协议
+///   （tauri.localhost，对应 mac/linux 的 tauri://）；Windows 资产协议若被当外部链接，
+///   cmd start 会把它当文件名打开而报「找不到文件」；
 /// - 拦截并在系统默认浏览器打开：外部 http(s)、mailto、tel（webview 内取消导航）。
 /// 注册为全局插件 on_navigation，配合客户端 JS 层（点击拦截 + window.open 覆盖）兜底新窗口场景。
 fn nav_guard_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
@@ -1305,7 +1307,9 @@ fn navigate_guard(url: &tauri::Url) -> bool {
     match url.scheme() {
         "http" | "https" => {
             let host = url.host_str().unwrap_or("");
-            let internal = host == "127.0.0.1" || host == "::1" || host == "localhost";
+            // 内部主机：dsh web（127.0.0.1/::1/localhost）+ Windows 资产协议主机 tauri.localhost
+            // （后者若被当外链会触发 cmd start 把 URL 当文件名打开而报「找不到文件」）
+            let internal = host == "127.0.0.1" || host == "::1" || host == "localhost" || host == "tauri.localhost";
             if internal {
                 return true;
             }
