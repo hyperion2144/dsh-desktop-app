@@ -11,6 +11,8 @@
     "allow-log-diag",
     "allow-choose-desktop-mode",
     "allow-get-mode-prompt-needed",
+    "allow-get-dsh-status",
+    "allow-restart-dsh-service",
     "allow-pet-show-main",
     "allow-pet-hide",
     "allow-pet-quit",

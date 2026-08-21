@@ -30,16 +30,87 @@ use tauri::{
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_notification::NotificationExt;
 
-/// dsh 服务端口（默认 3080，与浏览器/终端共用；`DSH_DESKTOP_PORT` 可覆盖）。
-/// 策略：端口已有 dsh web → 复用并降级接入（不带 advanced 标记、系统原生标题栏）；
-/// 空闲/高级 → 由本应用 spawn 实例并注入桌面局部拖拽 chrome（不禁用 ui-layout）。
-/// 注意：同一 profile 只允许一个 dsh web 实例并发（task-board 等插件持有排它锁），
-/// 因此不要用独立端口再起第二实例。
-fn app_port() -> u16 {
+/// 桌面壳专属设置：持久化于 $DSH_HOME/settings.yaml 的 `dsh-desktop-tauriapp:` 顶层键下。
+/// 只读写该键，文件其余内容（dsh 自身设置等）一律原样保留；原子写；解析失败先备份。
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+#[serde(default)]
+struct DesktopSettings {
+    /// 本地 dsh web 端口（默认 3080；DSH_DESKTOP_PORT 环境变量优先级更高）。
+    port: Option<u16>,
+    /// 激活 profile（spawn 时 `dsh --profile <name>`）。
+    active_profile: Option<String>,
+    /// 当前远程 dsh 地址（None=本地）。
+    remote_addr: Option<String>,
+    /// 已保存的远程地址列表（host[:port]）。
+    remote_list: Vec<String>,
+}
+
+fn settings_path() -> PathBuf {
+    dsh_home().join("settings.yaml")
+}
+
+/// 读取桌面壳设置（文件缺失或 `dsh-desktop-tauriapp:` 键缺失 → 默认值；解析失败 → 默认值）。
+fn load_desktop_settings() -> DesktopSettings {
+    let path = settings_path();
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return DesktopSettings::default();
+    };
+    match serde_yaml::from_str::<serde_yaml::Value>(&text) {
+        Ok(value) => serde_yaml::from_value(
+            value.get("dsh-desktop-tauriapp").cloned().unwrap_or(serde_yaml::Value::Null),
+        )
+        .unwrap_or_default(),
+        Err(_) => DesktopSettings::default(),
+    }
+}
+
+/// 保存桌面壳设置：与现有 settings.yaml 合并（只写 `dsh-desktop-tauriapp:` 键），原子写；
+/// 解析失败时先备份原文件，再以仅含 `dsh-desktop-tauriapp:` 的新文档落盘，绝不丢用户内容。
+fn save_desktop_settings(settings: &DesktopSettings) {
+    let path = settings_path();
+    let mut root: serde_yaml::Value = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_yaml::from_str(&text).unwrap_or_else(|_| {
+            let _ = std::fs::copy(&path, path.with_extension("yaml.bak"));
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
+        }),
+        Err(_) => serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+    };
+    if let Some(map) = root.as_mapping_mut() {
+        map.insert(
+            serde_yaml::Value::String("desktop".into()),
+            serde_yaml::to_value(settings).unwrap_or(serde_yaml::Value::Null),
+        );
+    }
+    let out = serde_yaml::to_string(&root).unwrap_or_default();
+    let tmp = path.with_extension("yaml.tmp");
+    if std::fs::write(&tmp, &out).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// 本地 dsh 端口：DSH_DESKTOP_PORT 环境变量 > settings.yaml desktop.port > 3080。
+fn configured_port() -> u16 {
     std::env::var("DSH_DESKTOP_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
+        .or_else(|| load_desktop_settings().port)
         .unwrap_or(3080)
+}
+
+/// 激活 profile（settings.yaml desktop.active_profile，非法值回退 web）。
+fn configured_profile() -> String {
+    load_desktop_settings()
+        .active_profile
+        .filter(|s| !s.is_empty() && !s.contains(['/', '\\', '\0']))
+        .unwrap_or_else(|| "web".to_string())
+}
+
+/// dsh 服务端口（= configured_port）。端口策略：
+/// 已有 dsh web → 复用并降级接入；空闲/高级 → 由本应用 spawn 实例并注入桌面 chrome。
+/// 注意：同一 profile 只允许一个 dsh web 实例并发（task-board 等插件持有排它锁），
+/// 因此不要用独立端口再起第二实例。
+fn app_port() -> u16 {
+    configured_port()
 }
 
 /// 等待服务就绪的超时时间。
@@ -82,6 +153,16 @@ impl std::fmt::Display for SpawnError {
 const MODE_ADVANCED: u8 = 0;
 const MODE_COMPAT: u8 = 1;
 
+/// dsh 服务状态（侧边栏标识与守护器共用，经 `dsh-status` 事件广播）。
+const STATUS_IDLE: u8 = 0;
+const STATUS_STARTING: u8 = 1;
+const STATUS_READY: u8 = 2;
+const STATUS_EXTERNAL: u8 = 3;
+const STATUS_RESTARTING: u8 = 4;
+const STATUS_STALE: u8 = 5;
+const STATUS_DOWN: u8 = 6;
+const STATUS_REMOTE: u8 = 7;
+
 /// 桌面壳的共享运行时状态。
 struct DshState {
     /// 本次运行 spawn 的 dsh 子进程（None = 复用了已有实例）。
@@ -93,6 +174,8 @@ struct DshState {
     mode_prompt_needed: AtomicBool,
     /// 当前接入模式（MODE_ADVANCED / MODE_COMPAT）。
     mode: AtomicU8,
+    /// dsh 服务状态（STATUS_*）。
+    status: AtomicU8,
     /// 内嵌启动加载页 URL（setup 抓取，重启/切换模式时回到该页）。
     loading_url: Mutex<Option<String>>,
     /// 托盘实例（供模式切换/重启后刷新「切换模式」标签用）。
@@ -101,6 +184,8 @@ struct DshState {
     spawn_failed: AtomicBool,
     /// 重启流程进行中（防止重复点击托盘重启项导致并发 kill/spawn）。
     restarting: AtomicBool,
+    /// 是否已至少完成一次就绪导航（守护器只在就绪后介入）。
+    ready_once: AtomicBool,
     /// 托盘"退出"标志（置位后放行窗口关闭与应用退出）。
     quitting: AtomicBool,
     /// 是否已提示过"隐藏到托盘"。
@@ -116,6 +201,15 @@ struct DshState {
     /// 双击拖拽区"缩放"前的主窗口几何（None = 当前处于标准尺寸，可触发放大；
     /// Some = 当前已放大，再双击恢复到此几何）。Mutex 防并发双击。
     pre_zoom_geom: Mutex<Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>>,
+}
+
+/// 设置并广播 dsh 服务状态（写 DshState + emit `dsh-status` 事件）。
+fn set_status(app: &AppHandle, status: u8, detail: &str) {
+    app.state::<DshState>().status.store(status, Ordering::SeqCst);
+    let _ = app.emit(
+        "dsh-status",
+        serde_json::json!({ "status": status, "detail": detail }),
+    );
 }
 
 /// 定位 dsh 可执行文件。
@@ -332,13 +426,17 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16, _advanced: bool) -> Result<Child
         )
     })?;
     let mut cmd = Command::new(&bin);
-    // 统一用 `dsh --profile web ...`（等价于 `dsh web`）。高级模式不再叠加任何
-    // 内置 overlay：不禁用 stock ui-layout，桌面插件在原生布局内注入局部拖拽区；
-    // 仅当设置 DSH_DESKTOP_EXTRA_PATCH 调试环境变量时叠加该 `--patch` overlay。
+    // 统一用 `dsh --profile web ...`（等价于 `dsh web`）。桌面插件经 --patch 注入
+    //（包名行，实体在共享模块池），不禁用 stock ui-layout；仅当设置
+    // DSH_DESKTOP_EXTRA_PATCH 调试环境变量时再叠加一个调试 overlay。
+    let profile = configured_profile();
+    let mut launcher_args: Vec<std::ffi::OsString> =
+        vec!["--profile".into(), profile.into()];
+    // 桌面插件经 --patch 注入（包名行，实体在共享模块池，不写 profile bundles）。
     // 注意顺序：--patch 必须早于 --no-open/--host —— dsh CLI 用 passThrough 解析，
     // 靠后的 --patch 会被透传给 web-app 而报 unknown option '--patch'。
-    let mut launcher_args: Vec<std::ffi::OsString> =
-        vec!["--profile".into(), "web".into()];
+    launcher_args.push("--patch".into());
+    launcher_args.push(desktop_plugin_patch_path(app).into_os_string());
     if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
         if !patch.trim().is_empty() {
             launcher_args.push("--patch".into());
@@ -357,6 +455,32 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16, _advanced: bool) -> Result<Child
         .env("PATH", dsh_runtime_path(&bin))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            // 提高 dsh 子进程文件描述符上限：长期会话 + 整页刷新（右键「刷新」= 整页
+            // reload）会让 dsh 侧插件（dsh-hud 的 fs.watch / SSE 等）反复注册 watcher，
+            // 默认 soft limit 下触发 EMFILE 崩溃（Node 进程退出 → 页面冻结）。只上调，
+            // 且不超过系统 hard limit。
+            cmd.pre_exec(|| {
+                let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+                if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 {
+                    let target: libc::rlim_t = 16384;
+                    if lim.rlim_cur < target {
+                        lim.rlim_cur = if lim.rlim_max == libc::RLIM_INFINITY || lim.rlim_max >= target {
+                            target
+                        } else {
+                            lim.rlim_max
+                        };
+                        if lim.rlim_cur > 0 {
+                            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+                        }
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
     let mut child = cmd
         .spawn()
         .map_err(|e| SpawnError::Other(format!("spawn {} 失败：{e}", bin.display())))?;
@@ -522,9 +646,13 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16, _advanced: bool) -> Result<Child
         vec![
             bin_js.clone().into(),
             "--profile".into(),
-            "web".into(),
+            configured_profile().into(),
         ];
-    // 高级模式不再叠加内置 overlay（不禁用 stock ui-layout，局部拖拽 chrome 由 client 注入）；
+    // 桌面插件经 --patch 注入（包名行，实体在共享模块池，不写 profile bundles）。
+    // 注意顺序：--patch 必须早于 --no-open/--host —— dsh CLI 用 passThrough 解析，
+    // 靠后的 --patch 会被透传给 web-app 而报 unknown option '--patch'。
+    launcher_args.push("--patch".into());
+    launcher_args.push(desktop_plugin_patch_path(app).into_os_string());
     // 仅当设置 DSH_DESKTOP_EXTRA_PATCH 调试环境变量时叠加该 `--patch` overlay。
     if let Ok(patch) = std::env::var("DSH_DESKTOP_EXTRA_PATCH") {
         if !patch.trim().is_empty() {
@@ -782,6 +910,57 @@ fn inject_task_notifier(app: AppHandle, port: u16, token: &str) {
     });
 }
 
+/// 最小 TCP+HTTP 探测：连接成功且 GET / 返回 <400 视为健康。
+fn probe_http(host_port: &str, path: &str) -> std::io::Result<bool> {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(host_port)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let req = format!("GET {path} HTTP/1.1
+Host: {host_port}
+Connection: close
+
+");
+    stream.write_all(req.as_bytes())?;
+    let mut buf = [0u8; 256];
+    let n = stream.read(&mut buf)?;
+    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+    Ok(head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .map(|code| code < 400)
+        .unwrap_or(false))
+}
+
+/// 本地 dsh 探测：健康=TCP 连接成功（监听 socket 在高负载时也接受连接，不会抖动）；
+/// HTTP 探测只作日志细节，绝不作为判死依据。
+fn probe_local(port: u16) -> (bool, String) {
+    let addr = format!("127.0.0.1:{port}");
+    if !matches!(std::net::TcpStream::connect(&addr), Ok(_)) {
+        return (false, format!("{addr} 连接失败"));
+    }
+    let detail = match probe_http(&addr, "/") {
+        Ok(true) => "HTTP 200".into(),
+        Ok(false) => "HTTP 非 2xx/3xx（仅日志）".into(),
+        Err(e) => format!("HTTP 探测超时/异常（仅日志）：{e}"),
+    };
+    (true, detail)
+}
+
+/// 远程 dsh 探测（host[:port]）：与本地同语义。
+fn probe_remote(addr: &str) -> (bool, String) {
+    if !matches!(std::net::TcpStream::connect(addr), Ok(_)) {
+        return (false, format!("{addr} 连接失败"));
+    }
+    let detail = match probe_http(addr, "/") {
+        Ok(true) => "HTTP 200".into(),
+        Ok(false) => "HTTP 非 2xx/3xx（仅日志）".into(),
+        Err(e) => format!("HTTP 探测超时/异常（仅日志）：{e}"),
+    };
+    (true, detail)
+}
+
 /// 确认/申请系统通知权限（三平台通用）。
 /// tauri-plugin-notification 桌面端 `request_permission`/`permission_state` 返回
 /// `PermissionState`：macOS 走 UNUserNotificationCenter、Windows 走 Toast（AUMID）、
@@ -870,80 +1049,101 @@ fn desktop_plugin_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
-/// 生成安装到 web profile 的插件 spec：开发（cargo target 内）用 link: 实时链接，
-/// 打包用 file:（内嵌副本）。
-fn desktop_plugin_spec(app: &tauri::AppHandle) -> Option<String> {
-    let dir = desktop_plugin_dir(app)?;
-    let abs = dir.canonicalize().ok()?;
-    #[cfg(target_os = "windows")]
-    {
-        // Windows：dsh plugin add 不接受 file:/link: 前缀，直接给盘符绝对路径
-        return Some(abs.display().to_string());
+/// 桌面插件 --patch 注入清单：行 `name: dsh-desktop-tauriapp`（包名），包实体按
+/// 共享模块池（$DSH_HOME/profiles/node_modules）解析——profile bundles 无需注册，
+/// 网页侧 client 照常挂载（参考项目 anywhere-labs/deepseek-harness-desktop 机制）。
+/// 写入 app 数据目录，幂等。
+fn desktop_plugin_patch_path(app: &tauri::AppHandle) -> PathBuf {
+    let Some(dir) = app.path().app_data_dir().ok() else {
+        return PathBuf::from("/tmp/dsh-desktop-tauriapp-inject.yml");
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("desktop-plugin-inject.yml");
+    let content = "- insert:\n    - id: dsh-desktop-tauriapp\n      name: dsh-desktop-tauriapp\n";
+    let stale = std::fs::read_to_string(&path).map(|t| t != content).unwrap_or(true);
+    if stale {
+        let _ = std::fs::write(&path, content);
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // 开发（cargo target 内解析到仓库根）用 link: 实时链接；打包（内嵌资源）用 file:
-        let dev = abs.to_string_lossy().contains("/target/");
-        Some(if dev {
-            format!("link:{}", abs.display())
-        } else {
-            format!("file:{}", abs.display())
-        })
-    }
+    path
 }
 
-/// 在 web profile 里执行官方 `plugin add`（Windows 走 `node <bin.js>`，其余走 `dsh`）。
-/// 参考项目同机制：dsh 会按需初始化 profile、转发给 pnpm、并把声明了 dsh.bundle 的
-/// 新依赖自动 reconcile 进 dsh.profile.bundles。
-fn run_dsh_plugin_add(spec: &str) -> Option<std::process::ExitStatus> {
-    #[cfg(target_os = "windows")]
-    {
-        let node = find_node()?;
-        let js = find_dsh_bin_js()?;
-        std::process::Command::new(node)
-            .arg(&js)
-            .args(["plugin", "--profile", "web", "add", "--config.minimumReleaseAge=0"])
-            .arg(spec)
-            .status()
-            .ok()
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let dsh = find_dsh_bin()?;
-        std::process::Command::new(&dsh)
-            .args(["plugin", "--profile", "web", "add", "--config.minimumReleaseAge=0"])
-            .arg(spec)
-            .status()
-            .ok()
-    }
-}
-
-/// 确保 web profile 已挂载桌面 chrome 插件（dsh-desktop-tauriapp）。
-/// 检测缺失时通过官方 `dsh plugin --profile web add <spec>` 安装（代码内完成，
-/// 不手工改任何 profile 配置）；幂等：bundles 已含且 node_modules 存在则跳过。
-fn ensure_web_profile_plugin(app: &tauri::AppHandle) {
-    let Some(spec) = desktop_plugin_spec(app) else {
-        log::warn!("未定位到 dsh-desktop-tauriapp 插件包，跳过 web profile 接线");
+/// 把内置插件包挂进共享模块池 $DSH_HOME/profiles/node_modules，使 `name: dsh-desktop-tauriapp`
+/// 从任意 profile 可解析（macOS/Linux 用符号链接，Windows 退化为复制整包）。幂等。
+fn materialize_desktop_plugin(app: &tauri::AppHandle) {
+    let Some(dir) = desktop_plugin_dir(app) else {
+        log::warn!("未定位到 dsh-desktop-tauriapp 插件包，跳过共享模块池挂载");
         return;
     };
-    let web_dir = dsh_home().join("profiles/web");
-    let pkg_path = web_dir.join("package.json");
-    let present_in_manifest = pkg_path
-        .exists()
-        .then(|| std::fs::read_to_string(&pkg_path).ok())
-        .flatten()
-        .map(|text| text.contains("dsh-desktop-tauriapp"))
-        .unwrap_or(false);
-    if present_in_manifest && web_dir.join("node_modules/dsh-desktop-tauriapp").exists() {
-        log::info!("web profile 已含 dsh-desktop-tauriapp 插件，跳过安装");
+    let pool = dsh_home().join("profiles").join("node_modules");
+    let _ = std::fs::create_dir_all(&pool);
+    let link = pool.join("dsh-desktop-tauriapp");
+    let target = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+    if let Ok(existing) = std::fs::read_link(&link) {
+        if existing == target {
+            log::info!("共享模块池已挂载 dsh-desktop-tauriapp（{}）", existing.display());
+            return;
+        }
+    }
+    if link.exists() || link.is_symlink() {
+        let _ = std::fs::remove_dir_all(&link);
+        let _ = std::fs::remove_file(&link);
+    }
+    #[cfg(unix)]
+    {
+        match std::os::unix::fs::symlink(&target, &link) {
+            Ok(()) => log::info!("共享模块池挂载 dsh-desktop-tauriapp -> {}", target.display()),
+            Err(e) => log::error!("共享模块池挂载 dsh-desktop-tauriapp（symlink）失败：{e}"),
+        }
+    }
+    #[cfg(windows)]
+    {
+        match copy_dir_all(&dir, &link) {
+            Ok(()) => log::info!("共享模块池复制 dsh-desktop-tauriapp -> {}", link.display()),
+            Err(e) => log::error!("共享模块池复制 dsh-desktop-tauriapp 失败：{e}"),
+        }
+    }
+}
+
+/// 复制目录树（Windows 不能保证目录符号链接权限，退化为实体复制）。
+#[cfg(windows)]
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), to)?;
+        }
+    }
+    Ok(())
+}
+
+/// 迁移：移除 web profile 里旧的 bundle 注册（历史版本用 `dsh plugin add` 写入），
+/// 否则与 --patch 注入行同 id 会触发 loader `duplicate loader entry id`。
+/// 直接编辑 package.json 的 dsh.profile.bundles；插件本体与共享池实体不动。
+fn strip_web_profile_plugin_bundle() {
+    let pkg_path = dsh_home().join("profiles/web/package.json");
+    let Ok(text) = std::fs::read_to_string(&pkg_path) else { return };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    let Some(bundles) = value
+        .get_mut("dsh")
+        .and_then(|d| d.get_mut("profile"))
+        .and_then(|p| p.get_mut("bundles"))
+    else {
+        return;
+    };
+    let Some(arr) = bundles.as_array_mut() else { return };
+    let before = arr.len();
+    arr.retain(|b| b.as_str().map(|s| s != "dsh-desktop-tauriapp").unwrap_or(true));
+    if arr.len() == before {
         return;
     }
-    match run_dsh_plugin_add(&spec) {
-        Some(s) if s.success() => {
-            log::info!("已通过 `dsh plugin --profile web add` 把桌面 chrome 插件装入 web profile：{spec}");
-        }
-        Some(s) => log::error!("dsh plugin add 失败（退出码 {}）", s.code().unwrap_or(-1)),
-        None => log::error!("dsh plugin add 执行失败：找不到 dsh/node 命令"),
+    if let Ok(out) = serde_json::to_string_pretty(&value) {
+        let _ = std::fs::write(&pkg_path, out + "\n");
+        log::info!("web profile 已移除 dsh-desktop-tauriapp bundle 注册（迁移到 --patch 注入）");
     }
 }
 
@@ -993,10 +1193,13 @@ async fn wait_ready_and_navigate(app: AppHandle, port: u16, nport: u16, ntoken: 
                 inject_task_notifier(app.clone(), nport, &ntoken);
             }
             log::info!("本地服务就绪，已导航到 {url}");
+            set_status(&app, STATUS_READY, "运行中");
+            app.state::<DshState>().ready_once.store(true, Ordering::SeqCst);
             return;
         }
         if Instant::now() >= deadline {
             log::error!("等待本地服务就绪超时（{}s）", READY_TIMEOUT.as_secs());
+            set_status(&app, STATUS_STALE, "就绪超时");
             show_error(&app, "timeout");
             return;
         }
@@ -1344,6 +1547,30 @@ fn log_diag(msg: String) {
     log::info!("[diag] {msg}");
 }
 
+/// 查询 dsh 服务状态（侧边栏状态标识轮询用）。
+#[tauri::command]
+fn get_dsh_status(state: tauri::State<DshState>) -> serde_json::Value {
+    serde_json::json!({
+        "status": state.status.load(Ordering::SeqCst),
+        "detail": "",
+        "port": configured_port(),
+        "profile": configured_profile(),
+        "remote": load_desktop_settings().remote_addr,
+    })
+}
+
+/// 请求重启 dsh 服务（状态标识点击触发；与托盘重启同一条流程）。
+#[tauri::command]
+fn restart_dsh_service(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<DshState>();
+    if state.restarting.load(Ordering::SeqCst) {
+        return Err("已在重启中".to_string());
+    }
+    let mode = state.mode.load(Ordering::SeqCst);
+    restart_dsh_in_mode(&app, mode);
+    Ok(())
+}
+
 /// 用户在启动页选择接入模式（仅复用外部 dsh web 实例时出现）。
 /// - `compat`：复用外部实例、标准布局、系统原生标题栏（不启用桌面 chrome）；
 /// - `advanced`：停用占用端口的现有 dsh（含外部进程），以桌面实例重启并注入局部拖拽 chrome。
@@ -1546,6 +1773,7 @@ fn restart_dsh_in_mode(app: &AppHandle, target_mode: u8) {
     }
     let mode_name = if target_mode == MODE_ADVANCED { "高级" } else { "兼容" };
     log::info!("[restart] 进入{mode_name}模式：回到加载页并重启 dsh 服务");
+    set_status(app, STATUS_RESTARTING, &format!("重启中（{mode_name}）"));
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         // 0) 回到启动加载页（像重启一样）
@@ -1644,17 +1872,21 @@ pub fn run() {
             open_external,
             choose_desktop_mode,
             get_mode_prompt_needed,
-            log_diag
+            log_diag,
+            get_dsh_status,
+            restart_dsh_service
         ])
 .manage(DshState {
             child: Mutex::new(None),
             spawned_this_run: AtomicBool::new(false),
             mode_prompt_needed: AtomicBool::new(false),
             mode: AtomicU8::new(MODE_ADVANCED),
+            status: AtomicU8::new(STATUS_IDLE),
             loading_url: Mutex::new(None),
             tray: Mutex::new(None),
             spawn_failed: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
+            ready_once: AtomicBool::new(false),
             quitting: AtomicBool::new(false),
             tray_tip_shown: AtomicBool::new(false),
             unread: AtomicU32::new(0),
@@ -1682,10 +1914,15 @@ pub fn run() {
                 log::info!("127.0.0.1:{port} 已有服务在监听，直接复用现有实例");
                 // 外部实例复用会禁用桌面 chrome：在加载页弹「兼容/高级」模式选择
                 state.mode_prompt_needed.store(true, Ordering::SeqCst);
+                set_status(app.handle(), STATUS_EXTERNAL, "复用外部实例");
             } else {
                 // 即将由本应用拉起 dsh：先确保 web profile 已挂载桌面 chrome 插件
                 //（参考项目机制：检测缺失则用官方 `dsh plugin --profile web add` 装上）。
-                ensure_web_profile_plugin(app.handle());
+                // 桌面插件改为 --patch 注入：先挂共享模块池（解析实体），再迁移旧 bundle 注册
+                log::info!("桌面插件 --patch 注入准备：挂共享模块池 + 迁移旧 bundle 注册");
+                set_status(app.handle(), STATUS_STARTING, "启动中");
+                materialize_desktop_plugin(app.handle());
+                strip_web_profile_plugin_bundle();
                 match spawn_dsh(app.handle(), port, true) {
                     Ok(child) => {
                         log::info!("dsh 子进程已启动（PID {}）", child.id());
@@ -1760,6 +1997,98 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(6)).await;
                     notify_completed(&handle, "这是测试通知：任务完成链路验证");
+                });
+            }
+            // 守护器：周期探测 dsh 服务。判定规则（防误杀/防抖动循环）：
+            // - 健康 = TCP 连接成功（监听 socket 高负载也接受连接；HTTP 状态仅作日志）；
+            // - 连续 3 次连接失败（≈15s）才算一次异常事件，且两次自动重启间隔 ≥60s；
+            // - 复用外部实例/远程：只提示、绝不代拉自动重启（不误杀用户自管实例）；
+            // - 自愈每轮 3 次封顶；自愈计数仅在「持续健康 ≥2 分钟」后重置（防抖动无限循环）；
+            // - 状态从非正常回 READY 时无额外动作。
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(5));
+                    let mut fail_streak = 0u32;
+                    let mut healthy_streak = 0u32;
+                    let mut epoch_failures = 0u32;
+                    let mut last_auto = Instant::now() - Duration::from_secs(60);
+                    let mut last_notify = Instant::now() - Duration::from_secs(300);
+                    loop {
+                        interval.tick().await;
+                        let state = handle.state::<DshState>();
+                        if state.quitting.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        if !state.ready_once.load(Ordering::SeqCst)
+                            || state.restarting.load(Ordering::SeqCst)
+                            || state.spawn_failed.load(Ordering::SeqCst)
+                        {
+                            continue;
+                        }
+                        let settings = load_desktop_settings();
+                        let (up, verbose) = match settings.remote_addr.as_deref() {
+                            Some(addr) => probe_remote(addr),
+                            None => probe_local(configured_port()),
+                        };
+                        let cur = state.status.load(Ordering::SeqCst);
+                        if up {
+                            fail_streak = 0;
+                            healthy_streak += 1;
+                            // 持续健康 ≥2 分钟（24 tick）才重置自愈计数：防「短暂健康→又失败」的抖动循环
+                            if healthy_streak >= 24 {
+                                epoch_failures = 0;
+                            }
+                            if cur == STATUS_STALE || cur == STATUS_DOWN || cur == STATUS_REMOTE {
+                                set_status(&handle, STATUS_READY, "运行中");
+                            }
+                            continue;
+                        }
+                        healthy_streak = 0;
+                        fail_streak += 1;
+                        if fail_streak < 3 {
+                            if cur != STATUS_RESTARTING {
+                                set_status(
+                                    &handle,
+                                    if settings.remote_addr.is_some() { STATUS_REMOTE } else { STATUS_STALE },
+                                    "服务异常（持续探测中）",
+                                );
+                            }
+                            continue;
+                        }
+                        if Instant::now() - last_auto < Duration::from_secs(60) {
+                            continue;
+                        }
+                        last_auto = Instant::now();
+                        fail_streak = 0;
+                        if settings.remote_addr.is_some() {
+                            set_status(&handle, STATUS_REMOTE, "远程不可达");
+                            if Instant::now() - last_notify >= Duration::from_secs(300) {
+                                last_notify = Instant::now();
+                                show_notification(&handle, "远程 dsh 不可达", &format!("{verbose}"));
+                            }
+                            continue;
+                        }
+                        if !state.spawned_this_run.load(Ordering::SeqCst) {
+                            // 复用外部实例：不代拉自动重启（那是用户的实例），仅提示
+                            set_status(&handle, STATUS_STALE, "外部实例不可达");
+                            if Instant::now() - last_notify >= Duration::from_secs(300) {
+                                last_notify = Instant::now();
+                                log::warn!("[watchdog] 外部 dsh 实例不可达（{verbose}），未自动重启");
+                                show_notification(&handle, "dsh 服务不可达", "复用的外部 dsh 实例已停止，请手动重启服务");
+                            }
+                            continue;
+                        }
+                        epoch_failures += 1;
+                        if epoch_failures >= 3 {
+                            log::error!("[watchdog] 连续自动恢复失败 3 次，停止自愈");
+                            set_status(&handle, STATUS_STALE, "异常（已停止自愈，请手动重启）");
+                            show_notification(&handle, "dsh 服务异常", "连续自动恢复失败，请手动重启");
+                            continue;
+                        }
+                        log::warn!("[watchdog] 检测到 dsh 异常（{verbose}），自动重启（第 {epoch_failures} 次）");
+                        restart_dsh_in_mode(&handle, state.mode.load(Ordering::SeqCst));
+                    }
                 });
             }
             build_tray(app)?;
@@ -1896,10 +2225,12 @@ mod tests {
             spawned_this_run: AtomicBool::new(false),
             mode_prompt_needed: AtomicBool::new(false),
             mode: AtomicU8::new(MODE_ADVANCED),
+            status: AtomicU8::new(STATUS_IDLE),
             loading_url: Mutex::new(None),
             tray: Mutex::new(None),
             spawn_failed: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
+            ready_once: AtomicBool::new(false),
             quitting: AtomicBool::new(false),
             tray_tip_shown: AtomicBool::new(false),
             unread: AtomicU32::new(0),

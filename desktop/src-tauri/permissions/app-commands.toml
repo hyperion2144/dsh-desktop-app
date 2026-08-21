@@ -42,3 +42,13 @@ commands = { allow = ["pet_toggle_passthrough"] }
 identifier = "allow-toggle-zoom"
 description = "允许切换缩放"
 commands = { allow = ["toggle_zoom"] }
+
+[[permission]]
+identifier = "allow-get-dsh-status"
+description = "允许查询 dsh 服务状态（侧边栏状态标识）"
+commands = { allow = ["get_dsh_status"] }
+
+[[permission]]
+identifier = "allow-restart-dsh-service"
+description = "允许请求重启 dsh 服务（状态标识点击）"
+commands = { allow = ["restart_dsh_service"] }

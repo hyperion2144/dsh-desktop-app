@@ -9,6 +9,8 @@ body[data-dsh-desktop-tauriapp-mode="advanced"] { margin: 0; }
 .dshDesktopChromeHost { position: fixed; inset: 0; z-index: 45; pointer-events: none; }
 .dshDesktopChromeStrip { position: absolute; display: flex; align-items: stretch; pointer-events: auto; }
 .dshDesktopChromeDrag { user-select: none; }
+.dshDesktopStatusBar { position: absolute; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 11px; line-height: 1; color: var(--dsw-alias-label-secondary, currentColor); border-top: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.25)); pointer-events: auto; user-select: none; }
+.dshDesktopStatusDot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 .dshDesktopWindowControls { position: absolute; top: 0; right: 0; height: 100%; display: flex; align-items: stretch; }
 .dshDesktopCaptionButton { width: 46px; border: none; margin: 0; padding: 0; background: transparent; color: var(--dsw-alias-label-primary, currentColor); display: grid; place-items: center; cursor: default; }
 .dshDesktopCaptionButton:hover { background: rgba(128, 128, 128, 0.18); }

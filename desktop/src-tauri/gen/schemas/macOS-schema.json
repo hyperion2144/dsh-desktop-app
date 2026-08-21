@@ -183,6 +183,12 @@
           "markdownDescription": "允许加载页切换兼容/高级接入模式"
         },
         {
+          "description": "允许查询 dsh 服务状态（侧边栏状态标识）",
+          "type": "string",
+          "const": "allow-get-dsh-status",
+          "markdownDescription": "允许查询 dsh 服务状态（侧边栏状态标识）"
+        },
+        {
           "description": "允许加载页轮询模式选择提示状态",
           "type": "string",
           "const": "allow-get-mode-prompt-needed",
@@ -223,6 +229,12 @@
           "type": "string",
           "const": "allow-pet-toggle-passthrough",
           "markdownDescription": "允许桌宠切换鼠标穿透"
+        },
+        {
+          "description": "允许请求重启 dsh 服务（状态标识点击）",
+          "type": "string",
+          "const": "allow-restart-dsh-service",
+          "markdownDescription": "允许请求重启 dsh 服务（状态标识点击）"
         },
         {
           "description": "允许切换缩放",

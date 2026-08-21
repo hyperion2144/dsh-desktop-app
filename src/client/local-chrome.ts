@@ -94,11 +94,59 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
   host.appendChild(strip)
   document.body.appendChild(host)
 
+  /** 底部状态条高度（sidebar 内容用 padding-bottom 让出一整行）。 */
+  const STATUS_BAR_HEIGHT = 24
+
+  const STATUS_TEXT: Record<number, string> = {
+    0: '初始化', 1: '启动中', 2: '运行中', 3: '复用外部实例', 4: '重启中',
+    5: '服务异常', 6: '服务下线', 7: '远程',
+  }
+  const STATUS_COLOR: Record<number, string> = {
+    0: '#9ca3af', 1: '#f59e0b', 2: '#22c55e', 3: '#22c55e',
+    4: '#f59e0b', 5: '#ef4444', 6: '#ef4444', 7: '#3b82f6',
+  }
+
+  function tauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | undefined {
+    const w = window as unknown as {
+      __TAURI__?: { core?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } }
+      __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> }
+    }
+    if (w.__TAURI__?.core?.invoke) return w.__TAURI__.core.invoke
+    if (w.__TAURI_INTERNALS__?.invoke) return w.__TAURI_INTERNALS__.invoke
+    return undefined
+  }
+
   let raf = 0
   let attempts = 0
   let mountTimer = 0
+  let statusTimer = 0
   let resizeObserver: ResizeObserver | null = null
   let mutationObserver: MutationObserver | null = null
+
+  // 底部状态条：sidebar 独占一整行（仅展示状态，不做点击重启——重启走托盘）
+  const bar = document.createElement('div')
+  bar.className = 'dshDesktopStatusBar'
+  bar.innerHTML = '<span class="dshDesktopStatusDot" aria-hidden="true"></span><span class="dshDesktopStatusText"></span>'
+  host.appendChild(bar)
+
+  const refreshStatus = () => {
+    const invoke = tauriInvoke()
+    if (!invoke) return
+    void invoke('get_dsh_status', {})
+      .then((value) => {
+        const s = (value as { status?: number }).status
+        if (typeof s !== 'number') return
+        const dot = bar.querySelector('.dshDesktopStatusDot') as HTMLElement | null
+        const text = bar.querySelector('.dshDesktopStatusText') as HTMLElement | null
+        const label = STATUS_TEXT[s] ?? `状态 ${s}`
+        if (dot !== null) dot.style.background = STATUS_COLOR[s] ?? '#9ca3af'
+        if (text !== null) text.textContent = label
+        bar.title = `dsh：${label}`
+      })
+      .catch(() => {})
+  }
+  refreshStatus()
+  statusTimer = window.setInterval(refreshStatus, 5000)
 
   const schedule = () => {
     if (raf !== 0) return
@@ -118,6 +166,9 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
     attempts = 0
     const { frame, sidebar, center } = layout
     const sidebarWidth = sidebar.offsetWidth
+    // 底部状态条：内容行让出一整行（所有平台），状态条覆盖其上
+    sidebar.style.paddingBottom = `${STATUS_BAR_HEIGHT}px`
+    bar.style.cssText = `left:0;bottom:0;width:${sidebarWidth}px;height:${STATUS_BAR_HEIGHT}px;`
 
     if (platform === 'darwin') {
       const collapsed = frame.hasAttribute('data-sidebar-collapsed')
@@ -200,11 +251,13 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
   return () => {
     if (raf !== 0) cancelAnimationFrame(raf)
     if (mountTimer !== 0) window.clearInterval(mountTimer)
+    if (statusTimer !== 0) window.clearInterval(statusTimer)
     resizeObserver?.disconnect()
     mutationObserver?.disconnect()
     const found = locateLayout()
     if (found !== null) {
       found.sidebar.style.paddingTop = ''
+      found.sidebar.style.paddingBottom = ''
       if (found.center !== null) found.center.style.paddingTop = ''
     }
     host.remove()
