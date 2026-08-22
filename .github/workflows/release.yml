@@ -53,7 +53,7 @@ jobs:
         id: notes
         shell: bash
         run: |
-          PREV=$(git tag --sort=-version:refname | grep -E '^v[0-9]' | sed -n '2p' || true)
+          PREV=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vx "${{ github.ref_name }}" | sed -n '1p' || true)
           if [ -n "$PREV" ]; then RANGE="$PREV..HEAD"; else RANGE="HEAD"; fi
           : > /tmp/body.md
           echo "## 本次更新（$RANGE）" >> /tmp/body.md
