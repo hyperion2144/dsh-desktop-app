@@ -9,6 +9,11 @@ description = "允许桌面 client 把诊断信息写入应用日志"
 commands = { allow = ["log_diag"] }
 
 [[permission]]
+identifier = "allow-log-console"
+description = "允许 WebView initialization_script 把 console.* 写入 ~/.dsh/dsh-desktop-webview.log"
+commands = { allow = ["log_console"] }
+
+[[permission]]
 identifier = "allow-choose-desktop-mode"
 description = "允许加载页切换兼容/高级接入模式"
 commands = { allow = ["choose_desktop_mode"] }

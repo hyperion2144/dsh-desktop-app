@@ -1132,19 +1132,15 @@ fn desktop_plugin_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 
 /// 桌面插件 --patch 注入清单：当前只注入桌面插件自身一行。
 /// 手机访问（dsh-mobile-access）与移动布局（@dsh-external/dsh-mobile-nav）暂不注入：
-/// dsh-mobile-access 的 client.js 是普通 ES module，dsh client-modules 加载器要求
-/// __ModuleLoader__.load 包裹格式，注入会导致 loader 启动失败（待 #9 打包后恢复多行）。
-/// 包实体按共享模块池
-/// （$DSH_HOME/profiles/node_modules）解析——profile bundles 无需注册，
-/// 网页侧 client 照常挂载（参考项目 anywhere-labs/deepseek-harness-desktop 机制）。
 /// 写入 app 数据目录，幂等。
+/// 注入清单包含桌面插件 + 移动端插件（client 已打包为 __ModuleLoader__.load 格式）。
 fn desktop_plugin_patch_path(app: &tauri::AppHandle) -> PathBuf {
     let Some(dir) = app.path().app_data_dir().ok() else {
         return PathBuf::from("/tmp/dsh-desktop-tauriapp-inject.yml");
     };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("desktop-plugin-inject.yml");
-    let content = "- insert:\n    - id: dsh-desktop-tauriapp\n      name: dsh-desktop-tauriapp\n";
+    let content = "- insert:\n    - id: dsh-desktop-tauriapp\n      name: dsh-desktop-tauriapp\n    - id: dsh-mobile-access\n      name: dsh-mobile-access\n    - id: dsh-mobile-nav\n      name: \"@dsh-external/dsh-mobile-nav\"\n";
     let stale = std::fs::read_to_string(&path).map(|t| t != content).unwrap_or(true);
     if stale {
         let _ = std::fs::write(&path, content);
@@ -1682,6 +1678,47 @@ fn get_mode_prompt_needed(state: tauri::State<DshState>) -> bool {
 #[tauri::command]
 fn log_diag(msg: String) {
     log::info!("[diag] {msg}");
+}
+
+/// WebView 控制台捕获：把页面侧 `console.*` 转发到 `$DSH_HOME/dsh-desktop-webview.log`，
+/// 便于不依赖 GUI 开发者工具直接 `tail -f` 看前端错误。客户端通过 `initialization_script`
+/// 包装 console.*（保持原行为不变，仅额外 invoke 此命令），命令失败吞掉以免阻塞页面。
+/// 不向 dsh 进程 stdout 镜像（控制台输出量大时会让 dsh-desktop-tauriapp.log 噪声翻倍），
+/// 但通过 `level=warn|error` 时仍镜像一份（出问题优先排查）。
+#[tauri::command]
+fn log_console(level: String, msg: String, page_url: Option<String>) {
+    use std::io::Write as _;
+    let path = dsh_home().join("dsh-desktop-webview.log");
+    let prefix = match level.as_str() {
+        "error" => "[error]",
+        "warn" => "[warn] ",
+        "info" => "[info] ",
+        "debug" => "[debug]",
+        _ => "[log]  ",
+    };
+    let page = page_url.as_deref().unwrap_or("?");
+    // 多行消息逐行加前缀，便于 grep；空行保留可读性。
+    let mut out = String::with_capacity(msg.len() + 64);
+    for (i, line) in msg.lines().enumerate() {
+        if i == 0 {
+            out.push_str(&format!("{prefix} [page={page}] {line}\n"));
+        } else {
+            out.push_str(&format!("{prefix}            {line}\n"));
+        }
+    }
+    if msg.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.write_all(out.as_bytes());
+    }
+    // 错误级额外镜像到 tauri 日志（便于和 dsh 子进程日志交叉对比）
+    if level == "error" || level == "warn" {
+        log::warn!("[webview] [{page}] {msg}");
+    }
 }
 
 /// 查询 dsh 服务状态（侧边栏状态标识轮询用）。
@@ -2450,6 +2487,7 @@ pub fn run() {
             choose_desktop_mode,
             get_mode_prompt_needed,
             log_diag,
+            log_console,
             get_dsh_status,
             restart_dsh_service,
             ui_input_confirm

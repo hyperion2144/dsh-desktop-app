@@ -195,6 +195,12 @@
           "markdownDescription": "允许加载页轮询模式选择提示状态"
         },
         {
+          "description": "允许 WebView initialization_script 把 console.* 写入 ~/.dsh/dsh-desktop-webview.log",
+          "type": "string",
+          "const": "allow-log-console",
+          "markdownDescription": "允许 WebView initialization_script 把 console.* 写入 ~/.dsh/dsh-desktop-webview.log"
+        },
+        {
           "description": "允许桌面 client 把诊断信息写入应用日志",
           "type": "string",
           "const": "allow-log-diag",

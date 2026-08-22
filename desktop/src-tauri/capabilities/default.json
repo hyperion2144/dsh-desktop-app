@@ -9,6 +9,7 @@
     "core:window:allow-start-dragging",
     "allow-open-external",
     "allow-log-diag",
+    "allow-log-console",
     "allow-choose-desktop-mode",
     "allow-get-mode-prompt-needed",
     "allow-get-dsh-status",
