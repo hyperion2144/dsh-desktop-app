@@ -48,7 +48,7 @@
   - capabilities/ —— default.json（主窗本地）、pet.json（桌宠）、remote-desktop.json（远程页 ACL）
   - permissions/app-commands.toml —— 应用自命令权限清单
 - desktop/scripts/ —— 验收脚本与 Windows 无管理员工具链模板
-- docs/ —— 设计与审计；docs/desktop-guardian-profile-remote-design.md 为托盘三件套设计稿
+- docs/ —— 设计与审计；docs/desktop-guardian-profile-remote-design.md 为托盘三件套设计稿；docs/mobile-access-design.md 为移动端（手机访问 Tab/配对/三端壳）设计稿，原型见 docs/prototypes/
 - .github/workflows/release.yml —— tag v* 双平台构建 + draft release + 自动 release notes
 - SKILL.md / README.md（README 部分描述已过时：实际已改为 --patch 注入 + 局部 chrome，
   不再 plugin add / 接管 root slot；以代码为准）
@@ -73,3 +73,17 @@
    CI 产物为准；失败时 hdiutil detach 清理 bundle/macos/rw.*.dmg 再试。
 8. 注入样式慎用 hash 类名：dsh 各 client 包的 css module 类名随版本漂移；优先用稳定标记
    （role/aria、data-*），例：设置弹窗 tab 列滚动修复即用 role=dialog + nav 结构定位。
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in this repo; use the `gh` CLI for all operations. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: one optional `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

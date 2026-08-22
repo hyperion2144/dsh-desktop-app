@@ -1,0 +1,55 @@
+<!doctype html><html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>原型：设置 · 手机访问（dsh 主题）</title>
+<style>
+:root{--bg:var(--dsw-alias-bg-base,#0f1115);--panel:var(--dsw-alias-bg-layer-1,#171a21);--panel2:var(--dsw-alias-bg-layer-2,#1b2029);--line:var(--dsw-alias-border-l2,#2a2f3a);--tx:var(--dsw-alias-label-primary,#e7eaf0);--tx2:var(--dsw-alias-label-secondary,#9aa4b2);--ac:var(--dsw-alias-state-accent-primary,#3b82f6);--ok:var(--dsw-alias-state-success-primary,#2fbf71);--off:#4a5160;--hover:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));--r:12px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font:14px/1.6 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",sans-serif;padding:28px;max-width:1080px;margin:0 auto}
+h1{font-size:17px;font-weight:600;margin-bottom:2px}.sub{color:var(--tx2);font-size:13px;margin-bottom:20px}
+h2{font-size:14px;font-weight:600;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.muted{color:var(--tx2);font-size:12px}
+button{background:var(--ac);border:none;color:#fff;border-radius:8px;padding:6px 13px;font-size:12px;cursor:pointer}button:hover{filter:brightness(1.08)}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--tx)}button.sm{padding:4px 10px;font-size:11px}button.ghost:hover{background:var(--hover)}
+input{background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:7px 10px;font-size:13px;width:100%;outline:none}
+.qr{width:132px;height:132px;background:#f5f5f2;border-radius:8px;display:grid;place-items:center;color:#8a8a82;font-size:11px;border:1px solid var(--line)}
+.stat{width:7px;height:7px;border-radius:50%;display:inline-block}.ok{background:var(--ok)}.off{background:var(--off)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 6px;color:var(--tx)}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:9px 6px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--tx2);font-weight:500;font-size:12px}
+.hint{font-size:12px;color:var(--tx2);margin-top:10px}
+</style></head><body>
+<h1>设置 · 手机访问</h1><div class=sub>扫码或手动输入配对地址，随时访问本机 dsh web（局域网 · 公网 · 内网穿透）。授权=一次性配对令牌 + 会话 Cookie。</div>
+<div class=grid>
+<div class=card><h2>局域网访问</h2>
+<div class=row><span class=muted>本机地址</span><code>192.168.1.23:3091</code><button class="ghost sm">刷新地址</button></div>
+<div class=row style="margin-top:12px"><div class=qr>二维码<br>（扫码配对）</div><div><button>复制配对链接</button><div class=hint style=margin-top:6px>dsh-mobile://pair?token=…</div>
+<div class=row style=margin-top:10px><span class=muted>配对令牌</span><code>••••••••</code><span class=muted>10 分钟有效</span><button class="ghost sm">刷新</button></div></div></div>
+</div>
+<div class=card><h2>公网访问（cloudflared 隧道）</h2>
+<div class=row><button class=sm>开启公网访问</button><span class=muted>https · 隧道</span></div>
+<div class=row style=margin-top:12px><div class=qr>二维码<br>（扫码配对）</div><div><button>复制配对链接</button><div class=hint style=margin-top:6px>https://xxxx.trycloudflare.com/pair?token=…</div>
+<div class=row style=margin-top:10px><button class="ghost sm">刷新令牌</button><button class="ghost sm">停止访问</button></div></div></div>
+<div class=hint>隧道随 dsh 重启自动恢复；公网与局域网均走令牌门禁</div>
+</div>
+<div class=card><h2>内网穿透（cpolar 等第三方隧道）</h2>
+<div class=muted style=margin-bottom:8px>在 cpolar 面板把隧道指向 <code>127.0.0.1:3091</code>（改写代理端口），再把公网地址填到这里校验：</div>
+<div class=row><input placeholder="https://xxxx.cpolar.cn"><button class=sm>校验</button></div>
+<div class=hint>✓ 可达 · WebSocket 正常 · 可生成配对二维码</div>
+<div class=row style=margin-top:10px><div class=qr>二维码<br>（扫码配对）</div><div class=hint>https://xxxx.cpolar.cn/pair?token=…<br>cpolar 直连失败机理见设计文档 §1.1</div></div>
+</div>
+<div class=card><h2>手动配对地址</h2>
+<div class=muted style=margin-bottom:8px>手机壳内也可手动输入以下任一形态完成配对（参考 web-ui 的手机/电脑链接）：</div>
+<div class=row><code>192.168.1.23:3091</code><button class="ghost sm">复制</button></div>
+<div class=row style=margin-top:8px><code>dsh-mobile://pair?token=…&amp;base=…</code><button class="ghost sm">复制</button></div>
+<div class=hint>输入 host:port 时自动补全协议与令牌</div>
+</div>
+<div class=card><h2>已配对设备</h2>
+<table><tr><th>设备</th><th>状态</th><th>最近活动</th><th></th></tr>
+<tr><td>iPhone 15 Pro</td><td><span class="stat ok"></span> 在线</td><td>刚刚</td><td><button class="ghost sm">取消配对</button></td></tr>
+<tr><td>Xiaomi 14</td><td><span class="stat off"></span> 离线</td><td>2 小时前</td><td><button class="ghost sm">取消配对</button></td></tr>
+</table>
+<div class=hint>令牌一次性+限时；「刷新」旧链接作废；「停止访问」撤销全部设备与令牌</div>
+</div>
+</div>
+<div class=sub style=margin-top:20px>原型仅供评审；样式沿用 dsh web 主题 token，实现见 docs/mobile-access-design.md</div>
+</body></html>

@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "DeepSeek 手机访问"
+    },
+    {
+      "name": "module_desc",
+      "value": "手机访问壳（鸿蒙 ArkTS）"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "DeepSeek Harness 手机访问入口"
+    }
+  ]
+}

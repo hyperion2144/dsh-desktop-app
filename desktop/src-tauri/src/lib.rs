@@ -43,6 +43,10 @@ struct DesktopSettings {
     remote_addr: Option<String>,
     /// 已保存的远程地址列表（host[:port]）。
     remote_list: Vec<String>,
+    /// 手机访问 lane（改写反代）端口（默认 3091；DSH_MOBILE_LANE_PORT 环境变量优先级更高）。
+    lane_port: Option<u16>,
+    /// cloudflared 可执行文件路径（设置后手机访问自动启动公网隧道；空=不启用）。
+    cloudflared_bin: Option<String>,
 }
 
 fn settings_path() -> PathBuf {
@@ -76,7 +80,14 @@ fn from_yaml_value(v: serde_yaml::Value) -> Option<DesktopSettings> {
 fn legacy_desktop_block(value: &serde_yaml::Value) -> Option<&serde_yaml::Value> {
     let block = value.get("desktop")?;
     let map = block.as_mapping()?;
-    const OUR_KEYS: [&str; 4] = ["port", "active_profile", "remote_addr", "remote_list"];
+    const OUR_KEYS: [&str; 6] = [
+        "port",
+        "active_profile",
+        "remote_addr",
+        "remote_list",
+        "lane_port",
+        "cloudflared_bin",
+    ];
     if OUR_KEYS
         .iter()
         .any(|k| map.contains_key(serde_yaml::Value::String((*k).to_string())))
@@ -139,6 +150,20 @@ fn configured_profile() -> String {
         .active_profile
         .filter(|s| !s.is_empty() && !s.contains(['/', '\\', '\0']))
         .unwrap_or_else(|| "web".to_string())
+}
+
+/// 手机访问 lane 端口：DSH_MOBILE_LANE_PORT 环境变量 > settings.yaml lane_port > 3091。
+fn configured_lane_port() -> u16 {
+    std::env::var("DSH_MOBILE_LANE_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .or_else(|| load_desktop_settings().lane_port)
+        .unwrap_or(3091)
+}
+
+/// cloudflared 可执行文件路径（settings.yaml cloudflared_bin；空=不启用公网隧道）。
+fn configured_cloudflared_bin() -> String {
+    load_desktop_settings().cloudflared_bin.unwrap_or_default()
 }
 
 /// dsh 服务端口（= configured_port）。端口策略：
@@ -495,7 +520,14 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16, _advanced: bool) -> Result<Child
     ]);
     cmd.args(&launcher_args)
         .env("PATH", dsh_runtime_path(&bin))
-        .stdout(Stdio::piped())
+        .env("DSH_MOBILE_LANE_PORT", configured_lane_port().to_string())
+        .env("DSH_MOBILE_ENABLED", "1")
+        .env("DSH_DESKTOP_PORT", port.to_string());
+    let cloudflared = configured_cloudflared_bin();
+    if !cloudflared.is_empty() {
+        cmd.env("DSH_CLOUDFLARED_BIN", cloudflared);
+    }
+    cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped());
     {
         use std::os::unix::process::CommandExt;
@@ -711,7 +743,14 @@ fn spawn_dsh(app: &tauri::AppHandle, port: u16, _advanced: bool) -> Result<Child
         port.to_string().into(),
     ]);
     cmd.args(&launcher_args)
-        .stdout(Stdio::piped())
+        .env("DSH_MOBILE_LANE_PORT", configured_lane_port().to_string())
+        .env("DSH_MOBILE_ENABLED", "1")
+        .env("DSH_DESKTOP_PORT", port.to_string());
+    let cloudflared = configured_cloudflared_bin();
+    if !cloudflared.is_empty() {
+        cmd.env("DSH_CLOUDFLARED_BIN", cloudflared);
+    }
+    cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     let mut child = cmd
@@ -1091,8 +1130,9 @@ fn desktop_plugin_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
-/// 桌面插件 --patch 注入清单：行 `name: dsh-desktop-tauriapp`（包名），包实体按
-/// 共享模块池（$DSH_HOME/profiles/node_modules）解析——profile bundles 无需注册，
+/// 桌面插件 --patch 注入清单：桌面插件 + 手机访问（dsh-mobile-access）+ 移动布局
+/// （@dsh-external/dsh-mobile-nav）三行包名；包实体按共享模块池
+/// （$DSH_HOME/profiles/node_modules）解析——profile bundles 无需注册，
 /// 网页侧 client 照常挂载（参考项目 anywhere-labs/deepseek-harness-desktop 机制）。
 /// 写入 app 数据目录，幂等。
 fn desktop_plugin_patch_path(app: &tauri::AppHandle) -> PathBuf {
@@ -1101,7 +1141,7 @@ fn desktop_plugin_patch_path(app: &tauri::AppHandle) -> PathBuf {
     };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("desktop-plugin-inject.yml");
-    let content = "- insert:\n    - id: dsh-desktop-tauriapp\n      name: dsh-desktop-tauriapp\n";
+    let content = "- insert:\n    - id: dsh-desktop-tauriapp\n      name: dsh-desktop-tauriapp\n    - id: dsh-mobile-access\n      name: dsh-mobile-access\n    - id: dsh-mobile-nav\n      name: @dsh-external/dsh-mobile-nav\n";
     let stale = std::fs::read_to_string(&path).map(|t| t != content).unwrap_or(true);
     if stale {
         let _ = std::fs::write(&path, content);
@@ -1109,20 +1149,39 @@ fn desktop_plugin_patch_path(app: &tauri::AppHandle) -> PathBuf {
     path
 }
 
-/// 把内置插件包挂进共享模块池 $DSH_HOME/profiles/node_modules，使 `name: dsh-desktop-tauriapp`
+/// 定位手机访问插件包目录（dsh-mobile-access / @dsh-external/dsh-mobile-nav）：
+/// 优先打包内嵌副本 resource_dir/plugins/<name>，回退开发仓库 mobile/<rel>。
+fn mobile_package_dir(app: &tauri::AppHandle, name: &str, rel: &str) -> Option<PathBuf> {
+    if let Ok(res_dir) = app.path().resource_dir() {
+        let embedded = res_dir.join("plugins").join(name);
+        if embedded.join("package.json").exists() {
+            return Some(embedded);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?;
+    for _ in 0..10 {
+        let pkg = dir.join("package.json");
+        if pkg.exists() {
+            if let Ok(text) = std::fs::read_to_string(&pkg) {
+                if text.contains("\"name\": \"dsh-desktop-tauriapp\"") || text.contains("\"name\":\"dsh-desktop-tauriapp\"") {
+                    return Some(dir.join("mobile").join(rel));
+                }
+            }
+        }
+        dir = dir.parent()?;
+    }
+    None
+}
+
+/// 把插件包挂进共享模块池 $DSH_HOME/profiles/node_modules，使 `name: <pkg>`
 /// 从任意 profile 可解析（macOS/Linux 用符号链接，Windows 退化为复制整包）。幂等。
-fn materialize_desktop_plugin(app: &tauri::AppHandle) {
-    let Some(dir) = desktop_plugin_dir(app) else {
-        log::warn!("未定位到 dsh-desktop-tauriapp 插件包，跳过共享模块池挂载");
-        return;
-    };
-    let pool = dsh_home().join("profiles").join("node_modules");
-    let _ = std::fs::create_dir_all(&pool);
-    let link = pool.join("dsh-desktop-tauriapp");
-    let target = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+fn materialize_pool_package(pool: &std::path::Path, link_name: &str, dir: &std::path::Path) {
+    let link = pool.join(link_name);
+    let target = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     if let Ok(existing) = std::fs::read_link(&link) {
         if existing == target {
-            log::info!("共享模块池已挂载 dsh-desktop-tauriapp（{}）", existing.display());
+            log::info!("共享模块池已挂载 {link_name}（{}）", existing.display());
             return;
         }
     }
@@ -1133,16 +1192,38 @@ fn materialize_desktop_plugin(app: &tauri::AppHandle) {
     #[cfg(unix)]
     {
         match std::os::unix::fs::symlink(&target, &link) {
-            Ok(()) => log::info!("共享模块池挂载 dsh-desktop-tauriapp -> {}", target.display()),
-            Err(e) => log::error!("共享模块池挂载 dsh-desktop-tauriapp（symlink）失败：{e}"),
+            Ok(()) => log::info!("共享模块池挂载 {link_name} -> {}", target.display()),
+            Err(e) => log::error!("共享模块池挂载 {link_name}（symlink）失败：{e}"),
         }
     }
     #[cfg(windows)]
     {
         match copy_dir_all(&dir, &link) {
-            Ok(()) => log::info!("共享模块池复制 dsh-desktop-tauriapp -> {}", link.display()),
-            Err(e) => log::error!("共享模块池复制 dsh-desktop-tauriapp 失败：{e}"),
+            Ok(()) => log::info!("共享模块池复制 {link_name} -> {}", link.display()),
+            Err(e) => log::error!("共享模块池复制 {link_name} 失败：{e}"),
         }
+    }
+}
+
+/// 把三个内置插件包挂进共享模块池：桌面插件 + 手机访问（dsh-mobile-access）+ 移动布局
+/// （@dsh-external/dsh-mobile-nav）。幂等。
+fn materialize_desktop_plugin(app: &tauri::AppHandle) {
+    let pool = dsh_home().join("profiles").join("node_modules");
+    let _ = std::fs::create_dir_all(&pool);
+    if let Some(dir) = desktop_plugin_dir(app) {
+        materialize_pool_package(&pool, "dsh-desktop-tauriapp", &dir);
+    } else {
+        log::warn!("未定位到 dsh-desktop-tauriapp 插件包，跳过共享模块池挂载");
+    }
+    if let Some(dir) = mobile_package_dir(app, "dsh-mobile-access", "dsh-mobile-access") {
+        materialize_pool_package(&pool, "dsh-mobile-access", &dir);
+    } else {
+        log::warn!("未定位到 dsh-mobile-access 插件包，跳过共享模块池挂载");
+    }
+    if let Some(dir) = mobile_package_dir(app, "@dsh-external/dsh-mobile-nav", "vendor/dsh-mobile-nav") {
+        materialize_pool_package(&pool, "@dsh-external/dsh-mobile-nav", &dir);
+    } else {
+        log::warn!("未定位到 @dsh-external/dsh-mobile-nav 插件包，跳过共享模块池挂载");
     }
 }
 
@@ -2783,11 +2864,15 @@ mod tests {
       active_profile: Some("web".into()),
       remote_addr: None,
       remote_list: vec!["x.cn:3091".into()],
+      lane_port: Some(3092),
+      cloudflared_bin: Some("/opt/bin/cloudflared".into()),
     };
     let y = serde_yaml::to_string(&s).unwrap();
     let back: DesktopSettings = serde_yaml::from_str(&y).unwrap();
     assert_eq!(back.port, Some(3081));
     assert_eq!(back.active_profile.as_deref(), Some("web"));
     assert_eq!(back.remote_list, vec!["x.cn:3091".to_string()]);
+    assert_eq!(back.lane_port, Some(3092));
+    assert_eq!(back.cloudflared_bin.as_deref(), Some("/opt/bin/cloudflared"));
   }
 }

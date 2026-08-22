@@ -3,3 +3,14 @@ node_modules/
 target/
 dist/
 *.log
+
+# 构建产物
+desktop/src-tauri/embedded/
+
+# 会话/工具临时产物（不提交）
+.scratch/
+.dsh-notes/
+.dsh-vision-toolkit/
+*.orig.png
+whale-iconset-tmp/
+zz-test-relative.txt

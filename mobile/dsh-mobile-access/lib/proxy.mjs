@@ -17,8 +17,8 @@ function rewriteHeaders(headers, upstreamHost, upstreamPort) {
   return out;
 }
 
-function isHtml(headers) {
-  return /text\/html/i.test(String(headers['content-type'] ?? '')) && !/(^|,)\s*(gzip|br|deflate)\s*(,|$)/i.test(String(headers['content-encoding'] ?? ''));
+function isCompressed(headers) {
+  return /(^|,)\s*(gzip|br|deflate)\s*(,|$)/i.test(String(headers['content-encoding'] ?? ''));
 }
 
 /**
@@ -27,7 +27,7 @@ function isHtml(headers) {
  * @returns {server, listen(port?)}
  */
 export function createRewriteProxy(opts) {
-  const { upstreamHost = '127.0.0.1', upstreamPort = 3080, inject = [], auth = null } = opts;
+  const { upstreamHost = '127.0.0.1', upstreamPort = 3080, inject = [], auth = null, onInjectSkip = null } = opts;
   const upstream = upstreamHost + ':' + upstreamPort;
   const server = http.createServer((req, res) => {
     if (auth) {
@@ -42,12 +42,14 @@ export function createRewriteProxy(opts) {
     const headers = rewriteHeaders(req.headers, upstreamHost, upstreamPort);
     const p = http.request({ host: upstreamHost, port: upstreamPort, path: req.url, method: req.method, headers }, (r) => {
       const outHeaders = { ...r.headers };
-      if (isHtml(r.headers) && inject.length > 0) {
+      const htmlDoc = /text\/html/i.test(String(r.headers['content-type'] ?? ''));
+      const shouldInject = htmlDoc && !isCompressed(r.headers) && inject.length > 0;
+      if (shouldInject) {
         delete outHeaders['content-length'];
         outHeaders['transfer-encoding'] = 'chunked';
       }
       res.writeHead(r.statusCode, outHeaders);
-      if (isHtml(r.headers) && inject.length > 0) {
+      if (shouldInject) {
         let buf = '';
         r.setEncoding('utf8');
         let injected = false;
@@ -66,6 +68,9 @@ export function createRewriteProxy(opts) {
           res.end();
         });
       } else {
+        if (htmlDoc && isCompressed(r.headers) && inject.length > 0 && onInjectSkip) {
+          onInjectSkip(req.url.split('?')[0]);
+        }
         r.pipe(res);
       }
     });

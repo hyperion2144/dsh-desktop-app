@@ -86,3 +86,24 @@ test('注入脚本产物', () => {
   assert.ok(p.includes('dsh-desktop-mode'));
   assert.ok(p.includes('darwin'));
 });
+
+test('压缩 HTML：跳过注入并触发 onInjectSkip 告警（不静默）', async () => {
+  const gz = http.createServer((_q, res) => {
+    res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' });
+    // gzip 是声明的而非真实压缩——反代应按声明跳过注入（内容原样透传即可）。
+    res.end(Buffer.from('<html><body>compressed</body></html>'));
+  });
+  await new Promise((r) => gz.listen(0, '127.0.0.1', r));
+  const skipped = [];
+  const proxy = createRewriteProxy({ upstreamHost: '127.0.0.1', upstreamPort: gz.address().port, inject: ['<tag/>'], onInjectSkip: (p) => skipped.push(p) });
+  const lp = await listen(proxy.server);
+  try {
+    const r = await getRaw('http://127.0.0.1:' + lp + '/page', { Host: 'x.cn' });
+    assert.equal(r.status, 200);
+    assert.ok(!r.body.includes('<tag/>'), '压缩响应不应注入');
+    assert.deepEqual(skipped, ['/page']);
+  } finally {
+    proxy.server.closeAllConnections?.(); proxy.server.close();
+    gz.closeAllConnections?.(); gz.close();
+  }
+});

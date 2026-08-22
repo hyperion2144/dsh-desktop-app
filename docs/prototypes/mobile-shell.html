@@ -1,0 +1,71 @@
+<!doctype html><html lang=zh><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>原型：DSH Mobile 手机壳（dsh 主题）</title>
+<style>
+:root{--bg:var(--dsw-alias-bg-base,#0f1115);--panel:var(--dsw-alias-bg-layer-1,#171a21);--panel2:var(--dsw-alias-bg-layer-2,#1b2029);--line:var(--dsw-alias-border-l2,#2a2f3a);--tx:var(--dsw-alias-label-primary,#e7eaf0);--tx2:var(--dsw-alias-label-secondary,#9aa4b2);--ac:var(--dsw-alias-state-accent-primary,#3b82f6);--ok:var(--dsw-alias-state-success-primary,#2fbf71);--off:#4a5160;--hover:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));--r:12px;--safe:env(safe-area-inset-top,0)}
+*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",sans-serif}
+body{background:var(--bg);color:var(--tx);font-size:14px;line-height:1.5}
+.phone{max-width:400px;margin:0 auto;min-height:100vh;background:var(--bg);padding:calc(var(--safe) + 14px) 16px 84px;position:relative}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}.top h1{font-size:16px;font-weight:600}
+.addbtn{background:var(--ac);border:none;color:#fff;border-radius:9px;padding:7px 14px;font-size:12px;font-weight:500}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:11px 13px;margin-bottom:10px;display:flex;align-items:center;gap:11px}
+.avatar{width:36px;height:36px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);display:grid;place-items:center;font-weight:600;font-size:13px;color:var(--tx2);flex:none}
+.meta{flex:1;min-width:0}.name{font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px}.addr{font-size:11px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{width:6px;height:6px;border-radius:50%;display:inline-block}.on{background:var(--ok)}.off{background:var(--off)}
+.btn{background:var(--panel);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:5px 11px;font-size:12px}.btn.primary{background:var(--ac);border-color:var(--ac);color:#fff}
+.hint{font-size:12px;color:var(--tx2)}
+.qrcode{width:124px;height:124px;margin:12px auto 8px;background:#f5f5f2;border:1px solid var(--line);border-radius:10px;display:grid;place-items:center;color:#8a8a82;font-size:11px}
+.empty{border:1px dashed var(--line);border-radius:var(--r);padding:24px 14px;text-align:center;color:var(--tx2);font-size:12px}
+.footer{position:absolute;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom,0) + 12px);display:flex;justify-content:center;padding-top:8px;border-top:1px solid var(--line)}
+.footer span{font-size:11px;color:var(--tx2)}
+.webview{position:absolute;inset:calc(var(--safe) + 8px) 8px 0;background:#12141a;border-radius:14px 14px 0 0;color:#dfe3ea;overflow:hidden;display:none}
+.webview.show{display:block}.bar{height:34px;background:#1a1d26;display:flex;align-items:center;padding:0 10px;gap:8px;font-size:11px;color:#7c8494}
+.drawer{position:absolute;top:34px;bottom:0;left:0;width:76%;background:#171a21;box-shadow:0 6px 30px rgba(0,0,0,.5);transform:translateX(-102%);transition:transform .22s;padding:14px;font-size:12px;color:#dfe3ea}.drawer.open{transform:none}
+.chat{padding:12px}.bubble{background:#191d26;border:1px solid #2a2f3a;border-radius:10px;padding:9px 11px;margin-bottom:8px;font-size:12px}.me{background:#1c2540;border-color:#31415f;margin-left:22px}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:#171a21;border-radius:14px 14px 0 0;padding:12px;font-size:12px;color:#dfe3ea;display:none}.sheet.show{display:block}
+.seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px;margin-bottom:14px}.seg button{flex:1;background:transparent;border:none;color:var(--tx2);border-radius:8px;padding:7px 0;font-size:12px;cursor:pointer}.seg button.on{background:var(--ac);color:#fff}
+.paste input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:12px;color:var(--tx);outline:none}
+</style></head><body>
+<div class=phone id=home>
+<div class=top><h1>DSH Mobile</h1><button class=addbtn onclick="showAdd()">添加配对</button></div>
+<div class=card onclick="enter(0)"><div class=avatar>家</div><div class=meta><div class=name>家里电脑 <span class="dot on"></span></div><div class=addr>https://xxxx.trycloudflare.com · 公网隧道</div></div><button class="btn primary" onclick="enter(0);event.stopPropagation()">进入</button></div>
+<div class=card onclick="enter(1)"><div class=avatar>办</div><div class=meta><div class=name>办公室 NAS <span class="dot off"></span></div><div class=addr>http://192.168.1.23:3091 · 局域网</div></div><button class="btn primary" onclick="enter(1);event.stopPropagation()">进入</button></div>
+<div class=card onclick="enter(2)"><div class=avatar>云</div><div class=meta><div class=name>cpolar 隧道 <span class="dot on"></span></div><div class=addr>https://xxxx.cpolar.cn · 内网穿透</div></div><button class="btn primary" onclick="enter(2);event.stopPropagation()">进入</button></div>
+<div class=empty>还没有配对？扫码或输入配对地址完成配对</div>
+<div class=footer><span>配对=一次性令牌 + 会话 Cookie · 原型仅供评审</span></div>
+</div>
+
+<div class="webview" id=wv>
+<div class=bar><b onclick="closeWv()">‹ 返回</b><span style=flex:1></span><span id=host>dsh web</span><b onclick="toggleDrawer()">☰</b></div>
+<div class=drawer id=drawer><b>会话列表</b><p class=hint>窄屏抽屉布局（dsh-web-mobile），会话全宽，底部安全区避让</p><p style=margin-top:10px>· 深思考/会话A<br>· 文件工作区<br>· 模型选择</p></div>
+<div class=chat>
+<div class=bubble>请分析一下这份招标文件，重点看资质要求。</div>
+<div class="bubble me">已开始分析…（流式输出经 WS 全透传）</div>
+<div class=bubble>✓ 资质要求共 6 条，其中第 3 条…</div>
+<div class=bubble style=margin-bottom:0>▲ 输入区</div>
+</div>
+<div class=sheet id=sheet><b>模型选择</b><p class=hint>底部弹层，触屏友好</p></div>
+</div>
+
+<div id=add style="display:none;padding:18px">
+<div class=top><h1>添加配对</h1><button class=btn onclick="hideAdd()">返回</button></div>
+<div class=seg><button id=tScan class=on onclick="seg(1)">扫码配对</button><button id=tInput onclick="seg(0)">输入地址</button></div>
+<div id=vScan>
+<div class=hint>扫描桌面端「设置 → 手机访问」的配对二维码</div><div class=qrcode>扫码占位<br>（调起相机）</div>
+</div>
+<div id=vInput style=display:none>
+<div class=hint style="margin:6px 0 8px">输入配对地址（host:port 或完整配对链接）</div>
+<div class="row paste"><input placeholder="192.168.1.23:3091 或 dsh-mobile://pair?token=…"></div>
+</div>
+<button class="btn primary" style="width:100%;margin-top:14px" onclick="addDummy()">配对并进入</button>
+<div class=hint style="margin-top:10px">令牌一次性+限时；配对成功后从列表进入，同一桌面仅一个实例</div>
+</div>
+<script>
+function enter(i){document.getElementById('home').style.display='none';var w=document.getElementById('wv');w.classList.add('show');document.getElementById('host').textContent=i===2?'xxxx.cpolar.cn':'trycloudflare.com';}
+function closeWv(){document.getElementById('wv').classList.remove('show');document.getElementById('home').style.display='';document.getElementById('drawer').classList.remove('open');}
+function toggleDrawer(){document.getElementById('drawer').classList.toggle('open');}
+function showAdd(){document.getElementById('home').style.display='none';document.getElementById('add').style.display='block';}
+function hideAdd(){document.getElementById('add').style.display='none';document.getElementById('home').style.display='';}
+function addDummy(){hideAdd();}
+function seg(scan){document.getElementById('vScan').style.display=scan?'':'none';document.getElementById('vInput').style.display=scan?'none':'';document.getElementById('tScan').className=scan?'on':'';document.getElementById('tInput').className=scan?'':'on';}
+</script>
+</body></html>
