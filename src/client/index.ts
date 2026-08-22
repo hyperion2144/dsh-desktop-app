@@ -75,6 +75,25 @@ function installWebviewConsoleMirror(): void {
 }
 
 /**
+ * 桌面壳 WebView 与浏览器行为对齐：macOS WKWebView 默认开启橡皮筋滚动
+ * （rubber-band bounce）——页面内容未超出视口时仍能轻微拖动并自动回弹，
+ * 露出 viewport 外的空白；浏览器没有该行为。用 `overscroll-behavior: none`
+ * 禁用（Safari/WKWebView 16+ 支持；普通浏览器无副作用，只是禁掉"过度滚动"，
+ * 正常滚动不受影响）。
+ */
+function installNoRubberBand(): void {
+  try {
+    const style = document.createElement('style')
+    style.dataset.dshDesktopNoBounce = '1'
+    style.textContent =
+      'html{overscroll-behavior:none;-webkit-overflow-scrolling:touch;} body{overscroll-behavior:none;}'
+    ;(document.head || document.documentElement).appendChild(style)
+  } catch {
+    /* noop */
+  }
+}
+
+/**
  * 桌面壳 client 入口：仅在桌面 shell 的 webview URL 携带
  * `dsh-desktop-tauriapp-mode=advanced&dsh-desktop-tauriapp-platform=<platform>` 时激活高级布局。
  * 普通浏览器访问（无 query 标记）时不做任何改动。
@@ -84,6 +103,8 @@ export function apply(ctx: ClientContext): void {
   // 最早装：把 console.* 镜像到 ~/.dsh/dsh-desktop-webview.log（开发期排查前端 bug 必备）。
   // 即使非 advanced 模式（普通浏览器直访 dsh）也装，便于离线调试。
   installWebviewConsoleMirror()
+  // WebView 橡皮筋滚动对齐浏览器（禁 rubber-band）
+  installNoRubberBand()
   // 桌面 webview（含复用降级/无标记场景）都接管外链打开；纯浏览器无 Tauri IPC 时 no-op
   installExternalLinkHandler()
   const environment = parseDesktopClientEnvironment(window.location.search)
