@@ -68,7 +68,9 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "embedded/dsh-desktop-tauriapp": "plugins/dsh-desktop-tauriapp/"
+      "embedded/dsh-desktop-tauriapp": "plugins/dsh-desktop-tauriapp/",
+      "embedded/dsh-mobile-access": "plugins/dsh-mobile-access/",
+      "embedded/@dsh-external/dsh-mobile-nav": "plugins/@dsh-external/dsh-mobile-nav/"
     }
   }
 }
