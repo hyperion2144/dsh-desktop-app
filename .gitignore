@@ -12,5 +12,6 @@ desktop/src-tauri/embedded/
 .dsh-notes/
 .dsh-vision-toolkit/
 *.orig.png
+*_orig.png
 whale-iconset-tmp/
 zz-test-relative.txt
