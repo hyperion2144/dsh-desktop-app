@@ -1,10 +1,13 @@
 // 手机访问服务装配（host 半区）：改写反代 + 配对路由(JS 回调) + SSE + 隧道启动。
 // 纯 Node 可测；桌面壳集成时在 dsh 进程内作为 bundle 插件装载。
 import http from 'node:http';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { createRewriteProxy, POLYFILL, desktopEnvPatchScript } from './proxy.mjs';
-import { PairingStore, deviceNameFromUA } from './pairing.mjs';
+import { PairingStore, createFileStorage, deviceNameFromUA } from './pairing.mjs';
 import { selectLanIPv4, buildPairLink, buildHttpPairLink, normalizeRemote } from './links.mjs';
+import { readSettingsString, writeSettingsKey } from './settings.mjs';
+import { resolveCloudflared } from './cloudflared.mjs';
 
 export function createMobileAccessService(opts = {}) {
   const {
@@ -12,10 +15,14 @@ export function createMobileAccessService(opts = {}) {
     upstreamPort = 3080,
     platform = 'linux',
     pairing = null,
+    // 默认文件持久化设备会话（$DSH_HOME 0600）；测试注入 pairing 时可传 createMemoryStorage()
+    storage = null,
     warn = null,
     fetchImpl = null,
   } = opts;
-  const store = pairing ?? new PairingStore();
+  const store = pairing ?? (storage
+    ? new PairingStore({ storage })
+    : new PairingStore({ storage: createFileStorage() }));
   const proxy = createRewriteProxy({
     upstreamHost,
     upstreamPort,
@@ -39,6 +46,135 @@ export function createMobileAccessService(opts = {}) {
     const host = String(req.headers.host ?? '').split(':')[0];
     const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '';
     return loopback && !req.headers['x-forwarded-for'];
+  }
+
+  // cloudflared 隧道控制器（服务级状态，可重启）：
+  //   bin    = cloudflared 可执行文件路径（'' / null = 未启用）
+  //   child  = 当前子进程（null = 未运行）
+  //   url    = 最近一次解析到的 trycloudflare 地址
+  //   startedAt / stopAt = 状态查询用时间戳
+  //   phase  = idle | resolving | downloading | starting | registering | ready | error
+  //           （pocket 风格的隧道生命周期阶段，cf 卡片 UI 轮询可见）
+  const tunnel = {
+    bin: '',
+    child: null,
+    url: null,
+    startedAt: 0,
+    stopping: false,
+    port: 3091,
+    phase: 'idle',
+    detail: '',
+    message: '',
+  };
+
+  // 第三方隧道地址（cpolar 等）内存态：POST /api/pair/tunnel 设置；
+  // 重启后从 settings.yaml tunnel_url 恢复（info 端点兜底读取）。
+  let customTunnel = '';
+
+  // 启动隧道（若已在运行则先停旧进程）。bin 为空 → 自动解析（PATH 优先，否则 $DSH_HOME/bin 缓存，
+  // 否则从 GitHub/ghproxy 等多镜像下载到缓存），全过程异步，phase 字段实时同步状态供 UI 轮询。
+  function startTunnel(bin, lanePort) {
+    stopTunnel();
+    tunnel.phase = 'resolving'
+    tunnel.detail = bin ? `启动 ${bin}` : '正在解析 cloudflared…'
+    tunnel.message = ''
+    void (async () => {
+      try {
+        let actualBin = bin
+        if (!actualBin) {
+          const result = await resolveCloudflared({
+            onPhase: (phase, detail) => {
+              tunnel.phase = phase
+              if (detail) tunnel.detail = detail
+            },
+          })
+          actualBin = result.path
+          tunnel.bin = actualBin
+          tunnel.detail = `${result.source === 'PATH' ? 'PATH 已有' : result.source === 'cache' ? '使用缓存' : '已下载'}：${actualBin}`
+        } else {
+          tunnel.bin = actualBin
+        }
+        const targetPort = lanePort ?? tunnel.port
+        tunnel.phase = 'starting'
+        tunnel.detail = '启动 cloudflared 子进程…'
+        let child
+        try {
+          // 强制 HTTP/2（443）而非 QUIC（7844 UDP）：国内/企业网常屏蔽 UDP 7844 → tunnel error 1033，
+          // 走 TCP 443 更稳。--no-autoupdate 跳过版本检查（启动更快）。
+          child = spawn(actualBin, ['tunnel', '--no-autoupdate', '--protocol', 'http2', '--url', `http://127.0.0.1:${targetPort}`], { stdio: ['ignore', 'pipe', 'pipe'] })
+        } catch (e) {
+          tunnel.phase = 'error'
+          tunnel.message = String(e?.message ?? e)
+          store.emit('tunnel', { url: null, reason: 'spawn-failed', message: tunnel.message })
+          return
+        }
+        tunnel.child = child
+        tunnel.startedAt = Date.now()
+        tunnel.url = null
+        tunnel.phase = 'registering'
+        tunnel.detail = '连接 Cloudflare 边缘（通常 5-30 秒）…'
+        let out = ''
+        const timer = setTimeout(() => {
+          child.emit('_cf_timeout')
+        }, 45000)
+        const tryParse = () => {
+          const m = out.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
+          if (m && !tunnel.stopping) {
+            tunnel.url = m[0]
+            tunnel.phase = 'ready'
+            tunnel.detail = '已连接 Cloudflare 边缘'
+            store.emit('tunnel', { url: tunnel.url })
+          }
+        }
+        child.stdout.on('data', (c) => {
+          out += c
+          tryParse()
+        })
+        child.stderr.on('data', (c) => {
+          out += c
+          // cloudflared 偶发把 URL 写到 stderr
+          tryParse()
+        })
+        child.on('error', (e) => {
+          clearTimeout(timer)
+          if (tunnel.child === child) tunnel.child = null
+          tunnel.url = null
+          tunnel.phase = 'error'
+          tunnel.message = String(e?.message ?? e)
+          store.emit('tunnel', { url: null, reason: 'spawn-failed', message: tunnel.message })
+        })
+        child.on('exit', () => {
+          clearTimeout(timer)
+          if (tunnel.child === child) tunnel.child = null
+          if (tunnel.phase !== 'error') tunnel.phase = 'idle'
+        })
+        child.on('_cf_timeout', () => {
+          clearTimeout(timer)
+          if (!tunnel.url) {
+            tunnel.phase = 'error'
+            tunnel.message = 'cloudflared 45s 未上报 trycloudflare 地址'
+            store.emit('tunnel', { url: null, reason: 'timeout' })
+          }
+        })
+      } catch (e) {
+        tunnel.phase = 'error'
+        tunnel.message = String(e?.message ?? e)
+        tunnel.detail = e?.message ?? String(e)
+      }
+    })()
+    return tunnel
+  }
+
+  // 停止隧道（kill 子进程，保留 bin 配置）。
+  function stopTunnel() {
+    if (tunnel.child) {
+      tunnel.stopping = true;
+      try { tunnel.child.kill(); } catch { /* noop */ }
+      tunnel.child = null;
+    }
+    tunnel.startedAt = 0;
+    tunnel.url = null;
+    tunnel.stopping = false;
   }
 
   // 配对/授权路由（先于上游转发）：
@@ -69,7 +205,69 @@ export function createMobileAccessService(opts = {}) {
     };
     if (path === '/pair') {
       const token = new URL(req.url, 'http://x').searchParams.get('token') ?? '';
-      json(200, { ok: true, mode: store.token ? 'await-token' : 'no-token', tokenLen: token.length });
+      // 浏览器配对：Accept 含 text/html → 自动接受 + 种 cookie + 302 进应用；
+      // API 探活 / 属主状态（无 token）→ 保持 JSON 状态。
+      const wantsHtml = String(req.headers.accept ?? '').includes('text/html');
+      if (token) {
+        const session = store.accept(token, { name: deviceNameFromUA(req.headers['user-agent'] ?? '') });
+        if (session) {
+          res.writeHead(302, {
+            'location': '/',
+            'set-cookie': 'dsh_mobile_session=' + session.cookie + '; HttpOnly; Path=/; SameSite=Lax',
+          });
+          res.end();
+          return true;
+        }
+        // token 无效或已作废：API 返回 403 JSON；浏览器渲染简短提示页。
+        if (wantsHtml) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          res.end('<!doctype html><meta charset="utf-8"><title>配对失败</title><body style="font-family:sans-serif;padding:32px;background:#171a21;color:#e7eaf0"><h2>配对失败</h2><p>链接无效或令牌已过期。请在桌面「远程访问」设置中重新铸造令牌。</p></body>');
+          return true;
+        }
+        json(403, { error: 'invalid-token' });
+        return true;
+      }
+      json(200, { ok: true, mode: store.token ? 'await-token' : 'no-token', tokenLen: 0 });
+      return true;
+    }
+    if (path === '/api/pair/info' && req.method === 'GET') {
+      // 仅属主：配对候选地址（client 生成 http(s) 配对链接/二维码用）。
+      if (!owner) { unpaired401(); return true; }
+      const lanIp = selectLanIPv4(os.networkInterfaces?.() ?? {});
+      let customTunnelUrl = customTunnel;
+      if (!customTunnelUrl) {
+        try { customTunnelUrl = readSettingsString('tunnel_url') ?? ''; } catch { /* noop */ }
+      }
+      json(200, {
+        lanePort: tunnel.port,
+        lanIp,
+        tunnelUrl: tunnel.url,
+        customTunnelUrl,
+      });
+      return true;
+    }
+    if (path === '/api/pair/tunnel' && req.method === 'POST') {
+      // 仅属主：保存第三方隧道地址（cpolar 等）用于生成配对二维码；空串清除。
+      if (!owner) { unpaired401(); return true; }
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        try {
+          const { url } = JSON.parse(body || '{}');
+          if (typeof url !== 'string') { json(400, { error: 'bad-request' }); return; }
+          const trimmed = url.trim();
+          if (trimmed && !/^https?:\/\//.test(trimmed)) { json(400, { error: 'bad-request' }); return; }
+          customTunnel = trimmed; // 内存态立即生效（重启后从 settings.yaml 恢复）
+          try {
+            writeSettingsKey('tunnel_url', JSON.stringify(trimmed));
+          } catch (e) {
+            try { warn?.('[dsh-mobile-access] 隧道地址持久化失败: ' + e); } catch { /* noop */ }
+          }
+          json(200, { ok: true, url: trimmed });
+        } catch (e) {
+          json(400, { error: 'bad-request' });
+        }
+      });
       return true;
     }
     if (path === '/api/pair/mint' && req.method === 'POST') {
@@ -112,6 +310,25 @@ export function createMobileAccessService(opts = {}) {
       json(200, { devices: store.snapshotDevices(), tokenRef: store.ref() });
       return true;
     }
+    if (path === '/api/pair/remove' && req.method === 'POST') {
+      // 移除单个设备配对（属主控制台操作）。
+      if (!owner) { unpaired401(); return true; }
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        try {
+          const { deviceId } = JSON.parse(body || '{}');
+          if (typeof deviceId !== 'string' || !store.removeDevice(deviceId)) {
+            json(404, { error: 'not-found' });
+            return;
+          }
+          json(200, { ok: true });
+        } catch (e) {
+          json(400, { error: 'bad-request' });
+        }
+      });
+      return true;
+    }
     if (path === '/api/pair/stop' && req.method === 'POST') {
       if (!canManage) { unpaired401(); return true; }
       store.stopAll();
@@ -129,6 +346,61 @@ export function createMobileAccessService(opts = {}) {
       res.write(':ok\n\n');
       const off = store.on((event, data) => res.write(store.sse(event, data)));
       req.on('close', off);
+      return true;
+    }
+    if (path === '/api/pair/cloudflared' && req.method === 'GET') {
+      // 仅属主：查询隧道配置与运行状态。
+      if (!owner) { unpaired401(); return true; }
+      json(200, {
+        bin: tunnel.bin,
+        url: tunnel.url,
+        running: !!tunnel.child,
+        startedAt: tunnel.startedAt,
+      });
+      return true;
+    }
+    if (path === '/api/pair/cloudflared' && req.method === 'POST') {
+      // 仅属主：设置 cloudflared 路径（应用并持久化）或停止隧道。
+      if (!owner) { unpaired401(); return true; }
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        try {
+          const { bin, action } = JSON.parse(body || '{}');
+          if (action === 'stop') {
+            stopTunnel();
+            json(200, { ok: true, running: false });
+            return;
+          }
+          if (typeof bin !== 'string') {
+            json(400, { error: 'bad-request' });
+            return;
+          }
+          const trimmed = bin.trim();
+          if (trimmed && !/^[^\0]+$/.test(trimmed)) {
+            json(400, { error: 'bad-request' });
+            return;
+          }
+          // 持久化到 settings.yaml（行级 merge，保留注释）；空串 = 进入 auto 模式（不固化路径）。
+          let saved = true;
+          if (trimmed) {
+            try {
+              writeSettingsKey('cloudflared_bin', JSON.stringify(trimmed));
+              const persisted = readSettingsString('cloudflared_bin');
+              if (persisted !== trimmed) saved = false;
+            } catch (e) {
+              saved = false;
+              try { warn?.('[dsh-mobile-access] cloudflared 配置持久化失败: ' + e); } catch { /* noop */ }
+            }
+          } else {
+            try { writeSettingsKey('cloudflared_bin', JSON.stringify('')); } catch { /* 忽略 */ }
+          }
+          startTunnel(trimmed || null, tunnel.port);
+          json(200, { ok: true, running: !!tunnel.child, bin: trimmed || null, phase: tunnel.phase, persisted: saved });
+        } catch (e) {
+          json(400, { error: 'bad-request' });
+        }
+      });
       return true;
     }
     return false;
@@ -171,18 +443,6 @@ export function createMobileAccessService(opts = {}) {
     originalHandler(req, res);
   });
 
-  function startTunnel(cloudflaredBin, lanePort) {
-    if (!cloudflaredBin) return { child: null, urlPromise: Promise.resolve(null) };
-    const child = spawn(cloudflaredBin, ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:' + lanePort], { stdio: ['ignore', 'pipe', 'pipe'] });
-    const urlPromise = new Promise((resolve) => {
-      let out = '';
-      child.stdout.on('data', (c) => { out += c; const m = out.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/); if (m) resolve(m[0]); });
-      child.stderr.on('data', () => {});
-      setTimeout(() => resolve(null), 30000);
-    });
-    return { child, urlPromise };
-  }
-
   return {
     store,
     proxy,
@@ -191,8 +451,17 @@ export function createMobileAccessService(opts = {}) {
     buildPairLink,
     buildHttpPairLink,
     normalizeRemote,
+    tunnel,
     startTunnel,
-    listen: (port = 0) => new Promise((res) => { proxy.server.listen(port, '127.0.0.1', () => res(proxy.server.address().port)); }),
+    stopTunnel,
+    listen: (port = 0) => new Promise((res) => {
+      // 0.0.0.0：局域网设备直连（配对门禁保护未配对路径；宿主 dsh 仍只面 loopback）。
+      proxy.server.listen(port, '0.0.0.0', () => {
+        const addr = proxy.server.address();
+        if (addr && typeof addr === 'object') tunnel.port = addr.port;
+        res(proxy.server.address().port);
+      });
+    }),
     close: () => new Promise((res) => proxy.server.close(() => res())),
   };
 }
@@ -224,8 +493,15 @@ export function allowCorsOrigin(origin, hostHeader) {
  *   DSH_CLOUDFLARED_BIN       = cloudflared 可执行文件路径（设置后自动起隧道）
  * 生命周期：ctx dispose 时关闭 lane 并回收 cloudflared 子进程。
  * 注：桌面壳插件的 host 半区若无需启动服务（如 dsh-desktop-tauriapp 仅技能）可留空 apply。
+ *
+ * 硬依赖：connection（ctx.connection.rpc.handle）—— 同源 RPC 通道是 client/host 通讯的
+ * 唯一途径，无 connection 即无法响应桌面壳 WebView 的 9 个端点请求，必须声明 inject。
+ * Cordis 的 Guard 会拒绝任何未声明的 ctx.<service> 访问并让整个 plugin tree 装载失败
+ * （下游所有插件如 dsh-session-log-export 也会被级联报 "failed to load"）。
  */
-export function apply(ctx) {
+export const inject = ['connection'];
+
+function apply(ctx) {
   const platform = typeof process !== 'undefined' ? process.platform : '';
   if (!platform || !ctx || typeof ctx.on !== 'function') return;
   if (process.env.DSH_MOBILE_ENABLED === '0') return;
@@ -237,7 +513,92 @@ export function apply(ctx) {
     platform,
     warn: (m) => { try { ctx?.logger?.warn?.(m); } catch { /* noop */ } },
   });
-  let tunnelChild = null;
+
+  // 同源 RPC handler（与 client 共享通道名 /dsh-mobile-access）：
+  // 桌面壳 WebView 跨域 fetch 被浏览器拦截，必须走 dsh 同源 connection RPC。
+  if (ctx?.connection?.rpc?.handle) {
+    const ch = '/dsh-mobile-access';
+    const ok = (v) => ({ ok: true, value: v });
+    const errRpc = (msg) => ({ ok: false, error: { code: 'bad-request', message: msg, details: { issues: [{ message: msg }] } } });
+    try { ctx?.logger?.info?.('dsh-mobile-access: 注册同源 RPC 通道 ' + ch); } catch {}
+    ctx.connection.rpc.handle(ch, async (endpoint, payload = {}, signal) => {
+      try {
+        switch (endpoint) {
+          case 'devices.list':
+            return ok({ devices: svc.store.snapshotDevices(), tokenRef: svc.store.ref() });
+          case 'devices.remove': {
+            const id = String(payload?.deviceId ?? '');
+            if (!id || !svc.store.removeDevice(id)) return errRpc('not-found');
+            return ok(true);
+          }
+          case 'token.mint': {
+            const t = svc.store.mint();
+            return ok({ token: t, expiresAt: svc.store.tokenExpiresAt });
+          }
+          case 'token.ref':
+            return ok({ ref: svc.store.ref() });
+          case 'info': {
+            const lanIp = selectLanIPv4(os.networkInterfaces?.() ?? {});
+            let customTunnelUrl = svc.tunnel && svc.tunnel._customUrl ? svc.tunnel._customUrl : '';
+            if (!customTunnelUrl) {
+              try { customTunnelUrl = readSettingsString('tunnel_url') ?? ''; } catch {}
+            }
+            return ok({
+              lanePort: svc.tunnel?.port ?? 3091,
+              lanIp,
+              tunnelUrl: svc.tunnel?.url ?? null,
+              customTunnelUrl,
+            });
+          }
+          case 'tunnel.probe': {
+            const url = String(payload?.url ?? '');
+            if (!url) return errRpc('bad-url');
+            // 同源调用方已信任（仅属主 + 同源 channel），直接调内部 probe
+            const verdict = await new Promise((resolve) => {
+              const json = (status, body) => resolve({ _status: status, ...body });
+              runProbe(url, json);
+            });
+            return ok(verdict);
+          }
+          case 'tunnel.save': {
+            const url = String(payload?.url ?? '').trim();
+            if (url && !/^https?:\/\//.test(url)) return errRpc('bad-url');
+            try { writeSettingsKey('tunnel_url', JSON.stringify(url)); } catch {}
+            if (svc.tunnel) svc.tunnel._customUrl = url;
+            return ok({ url });
+          }
+          case 'cloudflared.get':
+            return ok({
+              bin: svc.tunnel?.bin ?? '',
+              url: svc.tunnel?.url ?? null,
+              running: !!svc.tunnel?.child,
+              reason: svc.tunnel?.reason ?? null,
+              phase: svc.tunnel?.phase ?? 'idle',
+              detail: svc.tunnel?.detail ?? '',
+              message: svc.tunnel?.message ?? '',
+            });
+          case 'cloudflared.apply': {
+            // 空 bin = 自动解析（PATH 优先 → ~/.dsh/bin 缓存 → 多镜像下载），适合"一键启动"。
+            // 解析/下载是 async，phase 字段会从 'resolving' → 'downloading' → 'starting' → 'ready' 演进。
+            const bin = String(payload?.bin ?? '').trim();
+            const t = svc.startTunnel(bin || null, svc.tunnel?.port ?? 3091);
+            // 仅在用户显式给了 bin 时持久化（auto 模式每次启动自动解析，不要把缓存路径写死）。
+            if (bin) { try { writeSettingsKey('cloudflared_bin', JSON.stringify(bin)); } catch {} }
+            return ok({ bin: t.bin || null, running: !!t.child, phase: t.phase ?? 'resolving' });
+          }
+          case 'cloudflared.stop':
+            svc.stopTunnel();
+            return ok(true);
+          default:
+            return errRpc('unknown-endpoint');
+        }
+      } catch (e) {
+        return errRpc(String(e?.message ?? e));
+      }
+    }, { authority: 'loopback' });
+  } else {
+    try { ctx?.logger?.warn?.('dsh-mobile-access: connection.rpc 不可用，client 端将无法与 host 通信'); } catch {}
+  }
   let closed = false;
   const boot = async () => {
     try {
@@ -247,23 +608,28 @@ export function apply(ctx) {
       return;
     }
     try { ctx?.logger?.info?.(`dsh-mobile-access: lane 改写反代已监听 127.0.0.1:${lanePort} → ${svc.proxy.upstream}`); } catch { /* noop */ }
-    const bin = process.env.DSH_CLOUDFLARED_BIN || '';
+    // 启动时按 env（桌面壳 spawn 注入）优先，其次 settings.yaml 持久化值；
+    // 运行期变更走 POST /api/pair/cloudflared（立即生效 + 持久化）。
+    let bin = process.env.DSH_CLOUDFLARED_BIN || '';
+    if (!bin) {
+      try { bin = readSettingsString('cloudflared_bin') ?? ''; } catch { bin = ''; }
+    }
     if (bin) {
-      const t = svc.startTunnel(bin, lanePort);
-      tunnelChild = t.child;
-      const url = await t.urlPromise;
-      if (url && !closed) {
-        svc.store.emit('tunnel', { url });
-        try { ctx?.logger?.info?.(`dsh-mobile-access: cloudflared 隧道 ${url}`); } catch { /* noop */ }
-      } else if (!url) {
-        try { ctx?.logger?.warn?.('dsh-mobile-access: cloudflared 30s 未上报隧道地址'); } catch { /* noop */ }
-      }
+      svc.startTunnel(bin, lanePort);
+      try {
+        if (closed) return;
+        if (svc.tunnel.url) ctx?.logger?.info?.(`dsh-mobile-access: cloudflared 隧道 ${svc.tunnel.url}`);
+        else ctx?.logger?.info?.('dsh-mobile-access: cloudflared 已启动，等待隧道地址');
+      } catch { /* noop */ }
     }
   };
   void boot();
   ctx.on('dispose', () => {
     closed = true;
-    if (tunnelChild) { try { tunnelChild.kill(); } catch { /* noop */ } }
+    svc.stopTunnel();
     void svc.close();
   });
 }
+
+/** dsh bundle 插件入口：cordis-plugin-loader 会同时读取 apply + inject。 */
+export { apply };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePairInput, buildEnterUrl, createPairStore, parseDeepLink } from './pair';
+import { parsePairInput, buildEnterUrl, buildEntryUrl, createPairStore, parseDeepLink } from './pair';
 
 describe('parsePairInput 三种形态', () => {
   it('dsh-mobile:// 深链', () => {
@@ -8,10 +8,11 @@ describe('parsePairInput 三种形态', () => {
       base: '192.168.1.23:3091',
     });
   });
-  it('https 链接 /pair', () => {
+  it('https 链接 /pair（保留 entryUrl）', () => {
     expect(parsePairInput('https://x.cn:8080/pair?token=t2')).toEqual({
       token: 't2',
       base: 'x.cn:8080',
+      entryUrl: 'https://x.cn:8080/pair?token=t2',
     });
   });
   it('host:port + 额外令牌', () => {
@@ -26,10 +27,14 @@ describe('parsePairInput 三种形态', () => {
   });
 });
 
-describe('buildEnterUrl', () => {
+describe('buildEnterUrl / buildEntryUrl', () => {
   it('拼装 http 进入地址', () => {
     expect(buildEnterUrl('a.cn:3091')).toBe('http://a.cn:3091/');
     expect(buildEnterUrl('a.cn:3091', 'https')).toBe('https://a.cn:3091/');
+  });
+  it('entryUrl 优先（http 配对链接先走 /pair 自动配对）', () => {
+    expect(buildEntryUrl({ token: 't', base: 'a.cn:3091', entryUrl: 'https://a.cn:3091/pair?token=t' })).toBe('https://a.cn:3091/pair?token=t');
+    expect(buildEntryUrl({ token: 't', base: 'a.cn:3091' })).toBe('http://a.cn:3091/');
   });
 });
 

@@ -1,21 +1,102 @@
 // 配对令牌生命周期 + 设备会话 + SSE 事件编码（自实现）。
 import { randomBytes, createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 export const TOKEN_TTL_MS = 10 * 60 * 1000; // 10 分钟
 
+/**
+ * 文件存储适配器（默认）：$DSH_HOME 下 0600 文件，重启后设备会话/令牌恢复。
+ * @param {string} [file] 存储文件路径；默认 $DSH_HOME/storages/mobile-access/pairing.json
+ */
+export function createFileStorage(file) {
+  const resolved = file ?? path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'storages', 'mobile-access', 'pairing.json');
+  return {
+    path: resolved,
+    load() {
+      try {
+        const text = fs.readFileSync(resolved, 'utf8');
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+    save(state) {
+      try {
+        fs.mkdirSync(path.dirname(resolved), { recursive: true });
+        fs.writeFileSync(resolved, JSON.stringify(state));
+        try { fs.chmodSync(resolved, 0o600); } catch { /* noop */ }
+      } catch { /* 持久化失败不阻塞运行（仅下次重启需重配对） */ }
+    },
+  };
+}
+
+/** 内存存储适配器（测试用／不持久化）。 */
+export function createMemoryStorage() {
+  let mem = null;
+  return {
+    load: () => mem,
+    save: (state) => { mem = state; },
+  };
+}
+
 export class PairingStore {
-  constructor({ tokenTtlMs = TOKEN_TTL_MS } = {}) {
+  /**
+   * @param {object} [opts]
+   * @param {number} [opts.tokenTtlMs]
+   * @param {{load:()=>any|null, save:(state:any)=>void}} [opts.storage] 持久化适配器
+   */
+  constructor({ tokenTtlMs = TOKEN_TTL_MS, storage = null } = {}) {
     this.tokenTtlMs = tokenTtlMs;
     this.token = null;
     this.tokenExpiresAt = 0;
     this.devices = new Map();
     this.listeners = [];
+    this.storage = storage;
+    if (storage) this._restore();
+  }
+  // 从持久化状态恢复（进程重启后设备会话/令牌不丢）。
+  _restore() {
+    try {
+      const state = this.storage.load();
+      if (!state || typeof state !== 'object') return;
+      this.token = typeof state.token === 'string' ? state.token : null;
+      this.tokenExpiresAt = Number(state.tokenExpiresAt ?? 0);
+      if (Array.isArray(state.devices)) {
+        for (const d of state.devices) {
+          if (d && typeof d.deviceId === 'string' && typeof d.cookie === 'string') {
+            this.devices.set(d.deviceId, {
+              name: typeof d.name === 'string' ? d.name : '未知设备',
+              pairedAt: Number(d.pairedAt ?? Date.now()),
+              cookie: d.cookie,
+              lastSeen: Number(d.lastSeen ?? Date.now()),
+              online: d.online !== false,
+            });
+          }
+        }
+      }
+    } catch { /* 损坏/不可读 → 按空开始 */ }
+  }
+  _persist() {
+    if (!this.storage) return;
+    try {
+      this.storage.save({
+        token: this.token,
+        tokenExpiresAt: this.tokenExpiresAt,
+        devices: [...this.devices.entries()].map(([deviceId, d]) => ({
+          deviceId, name: d.name, pairedAt: d.pairedAt, cookie: d.cookie,
+          lastSeen: d.lastSeen, online: d.online,
+        })),
+      });
+    } catch { /* noop */ }
   }
   // 铸一枚新令牌（旧令牌自动作废）。
   mint() {
     const raw = randomBytes(16).toString('hex');
     this.token = raw;
     this.tokenExpiresAt = Date.now() + this.tokenTtlMs;
+    this._persist();
     this.emit('token', { ref: this.ref(), expiresAt: this.tokenExpiresAt });
     return raw;
   }
@@ -30,9 +111,12 @@ export class PairingStore {
   }
   // 使当前令牌失效（旧链接作废）。
   revoke() {
-    if (this.token) this.emit('token', { ref: this.ref(), revoked: true });
+    if (this.token) {
+      this.emit('token', { ref: this.ref(), revoked: true });
+    }
     this.token = null;
     this.tokenExpiresAt = 0;
+    this._persist();
   }
   // 接受配对：令牌正确 & 未过期 → 创建设备会话；接受后令牌作废（一次性）。
   accept(token, { name = '未知设备' } = {}) {
@@ -41,6 +125,7 @@ export class PairingStore {
     const cookie = randomBytes(16).toString('hex');
     this.devices.set(deviceId, { name, pairedAt: Date.now(), cookie, lastSeen: Date.now(), online: true });
     this.revoke();
+    this._persist();
     this.emit('devices', this.snapshotDevices());
     this.emit('state', { paired: true });
     return { deviceId, cookie };
@@ -56,13 +141,17 @@ export class PairingStore {
   // 取消单个设备配对。
   removeDevice(deviceId) {
     const had = this.devices.delete(deviceId);
-    if (had) this.emit('devices', this.snapshotDevices());
+    if (had) {
+      this._persist();
+      this.emit('devices', this.snapshotDevices());
+    }
     return had;
   }
   // 撤销全部设备与令牌（停止访问）。
   stopAll() {
     this.devices.clear();
     this.revoke();
+    this._persist();
     this.emit('state', { paired: false });
     this.emit('devices', this.snapshotDevices());
   }

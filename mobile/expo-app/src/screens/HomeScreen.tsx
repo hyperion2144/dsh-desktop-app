@@ -9,7 +9,7 @@ import {
   Linking,
 } from 'react-native';
 import { shellStyles, palette } from '../theme';
-import { parsePairInput, buildEnterUrl, type PairEntry } from '../lib/pair';
+import { parsePairInput, buildEntryUrl, type PairEntry } from '../lib/pair';
 import {
   loadPairs,
   pairs,
@@ -48,9 +48,11 @@ export function HomeScreen({ onEnter }: { onEnter: (t: EnterTarget) => void }) {
     enterPair(p);
   }
 
-  function enterPair(p: { token: string; base: string; name?: string }) {
+  function enterPair(p: { token: string; base: string; name?: string; entryUrl?: string }) {
     setActive(p.base);
-    onEnter({ url: buildEnterUrl(p.base), base: p.base, name: p.name ?? p.base });
+    // entryUrl（http 配对链接）优先：先访问 /pair?token= 自动配对种 cookie → 302 进应用；
+    // dsh-mobile:// 深链与已保存配对（无 entryUrl）直连 base/。
+    onEnter({ url: buildEntryUrl(p), base: p.base, name: p.name ?? p.base });
   }
 
   function submit() {

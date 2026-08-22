@@ -6,7 +6,7 @@ import { createRewriteProxy, POLYFILL, desktopEnvPatchScript } from '../lib/prox
 function startUpstream() {
   const sockets = new Set();
   const server = http.createServer((req, res) => {
-    const html = req.url === '/' ? '<html><body>hello</body></html>' : JSON.stringify({ url: req.url, host: req.headers['host'], origin: req.headers['origin'] ?? null });
+    const html = req.url === '/' ? '<html><head></head><body>hello</body></html>' : JSON.stringify({ url: req.url, host: req.headers['host'], origin: req.headers['origin'] ?? null });
     res.writeHead(200, { 'content-type': req.url === '/' ? 'text/html' : 'application/json' });
     res.end(html);
   });
@@ -105,5 +105,80 @@ test('压缩 HTML：跳过注入并触发 onInjectSkip 告警（不静默）', a
   } finally {
     proxy.server.closeAllConnections?.(); proxy.server.close();
     gz.closeAllConnections?.(); gz.close();
+  }
+});
+test('WS 传输中客户端暴力断开：不产生未捕获异常（EPIPE 崩溃回归）', async () => {
+  // 上游 WS 服务器：接受 upgrade 后持续给客户端发数据
+  const upstream = http.createServer((_q, _r) => { _r.end(); });
+  upstream.on('upgrade', (_req, sock) => {
+    sock.on('error', () => {}); // 客户端暴力断开后上游写 EPIPE，静默（测试夹具自身）
+    const timer = setInterval(() => { try { sock.write('x'); } catch { /* noop */ } }, 10);
+    sock.on('close', () => clearInterval(timer));
+    sock.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: test\r\n\r\n');
+  });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const proxy = createRewriteProxy({ upstreamHost: '127.0.0.1', upstreamPort: upstream.address().port });
+  const lp = await listen(proxy.server);
+  const unhandled = [];
+  const origOn = process.listeners('uncaughtException').slice();
+  process.removeAllListeners('uncaughtException');
+  process.on('uncaughtException', (e) => { unhandled.push(String(e?.message ?? e)); });
+  try {
+    const req = http.request('http://127.0.0.1:' + lp + '/ws', {
+      headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'AQIDBAUGBwgJCgsMDQ4P' },
+    });
+    await new Promise((resolve, reject) => {
+      req.on('upgrade', (_r, sock) => {
+        sock.on('error', () => {}); // 测试客户端 socket 静默
+        sock.once('data', () => { sock.destroy(); resolve(); });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    // 等代理侧 teardown（含 2s 强制销毁兜底）传播完，确认全程无 uncaught
+    await new Promise((r) => setTimeout(r, 2600));
+    assert.deepEqual(unhandled, [], '代理不应产生未捕获异常（会打崩 dsh 进程）');
+  } finally {
+    process.removeAllListeners('uncaughtException');
+    for (const l of origOn) process.on('uncaughtException', l);
+    proxy.server.closeAllConnections?.(); proxy.server.close();
+    upstream.closeAllConnections?.(); upstream.close();
+  }
+});
+
+test('大 JSON/文本响应流式压缩（gzip），SSE 原样透传', async () => {
+  const up = http.createServer((q, res) => {
+    if (q.url === '/big') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: 'x'.repeat(5000) }));
+    } else if (q.url === '/sse') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('event: a\ndata: 1\n\n');
+      res.end();
+    } else {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('small');
+    }
+  });
+  await new Promise((r) => up.listen(0, '127.0.0.1', r));
+  const proxy = createRewriteProxy({ upstreamHost: '127.0.0.1', upstreamPort: up.address().port });
+  const lp = await listen(proxy.server);
+  try {
+    // 大 JSON → gzip
+    const big = await fetch('http://127.0.0.1:' + lp + '/big', { headers: { 'accept-encoding': 'gzip' } });
+    assert.equal(big.headers.get('content-encoding'), 'gzip');
+    const bigBody = await big.text();
+    // fetch 自动解压 gzip；验证内容完整
+    assert.ok(bigBody.includes('"data"'));
+    // SSE → 原样（不压缩）
+    const sse = await fetch('http://127.0.0.1:' + lp + '/sse', { headers: { 'accept-encoding': 'gzip' } });
+    assert.ok(!sse.headers.get('content-encoding'), 'SSE 不应压缩');
+    assert.ok((await sse.text()).includes('event: a'));
+    // 小文本（chunked 无 content-length）→ 压缩无害，内容必须正确
+    const small = await fetch('http://127.0.0.1:' + lp + '/small', { headers: { 'accept-encoding': 'gzip' } });
+    assert.equal(await small.text(), 'small');
+  } finally {
+    proxy.server.closeAllConnections?.(); proxy.server.close();
+    up.closeAllConnections?.(); up.close();
   }
 });

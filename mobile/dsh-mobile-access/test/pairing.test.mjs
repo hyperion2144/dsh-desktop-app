@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PairingStore, deviceNameFromUA, fingerprint } from '../lib/pairing.mjs';
+import { PairingStore, deviceNameFromUA, fingerprint, createMemoryStorage, createFileStorage } from '../lib/pairing.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 test('令牌生命周期：mint/validate/过期/revoke', async () => {
   const s = new PairingStore({ tokenTtlMs: 40 });
@@ -47,3 +50,44 @@ test('SSE 帧与工具函数', () => {
   assert.match(fingerprint('abc'), /^[0-9a-f]{12}$/);
 });
 
+
+
+test('持久化：内存存储适配器恢复设备会话与令牌', () => {
+  const storage = createMemoryStorage();
+  const s1 = new PairingStore({ storage });
+  const t = s1.mint();
+  const acc = s1.accept(t, { name: 'Pixel 9' });
+  assert.ok(acc);
+  // 模拟重启：同一存储新建 store
+  const s2 = new PairingStore({ storage });
+  assert.equal(s2.isDevice(acc.cookie), true, '重启后设备 cookie 应恢复');
+  assert.equal(s2.snapshotDevices().length, 1);
+  assert.equal(s2.snapshotDevices()[0].name, 'Pixel 9');
+  // 令牌已一次性消费，恢复后仍无效
+  assert.equal(s2.validate(t), false);
+  // removeDevice 持久化
+  s2.removeDevice(acc.deviceId);
+  const s3 = new PairingStore({ storage });
+  assert.equal(s3.snapshotDevices().length, 0);
+});
+
+test('持久化：文件存储 0600 + 重启恢复', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-pair-'));
+  const file = path.join(dir, 'pairing.json');
+  try {
+    const storage = createFileStorage(file);
+    const s1 = new PairingStore({ storage });
+    const t = s1.mint();
+    const acc = s1.accept(t, { name: 'iPhone' });
+    assert.ok(acc);
+    // 文件存在且 0600
+    const mode = fs.statSync(file).mode & 0o777;
+    assert.equal(mode, 0o600, '设备会话文件必须 0600');
+    // 重启恢复
+    const s2 = new PairingStore({ storage: createFileStorage(file) });
+    assert.equal(s2.isDevice(acc.cookie), true);
+    assert.equal(s2.snapshotDevices()[0].name, 'iPhone');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
