@@ -48,10 +48,31 @@
   - capabilities/ —— default.json（主窗本地）、pet.json（桌宠）、remote-desktop.json（远程页 ACL）
   - permissions/app-commands.toml —— 应用自命令权限清单
 - desktop/scripts/ —— 验收脚本与 Windows 无管理员工具链模板
-- docs/ —— 设计与审计；docs/desktop-guardian-profile-remote-design.md 为托盘三件套设计稿；docs/mobile-access-design.md 为移动端（手机访问 Tab/配对/三端壳）设计稿，原型见 docs/prototypes/
+- mobile/ —— 手机访问（设计稿 docs/mobile-access-design.md）
+  - dsh-mobile-access/ —— 手机访问服务（host+client 半区）：改写反代、配对/控制路由、
+    SSE、cloudflared 隧道；host apply(ctx) 随 dsh 装载启动 lane；client.js = 设置「手机访问」Tab
+  - shell-web/ —— 浏览器 H5 壳纯逻辑（parsePairInput/buildEnterUrl/createPairStore，被 Expo/Harmony 移植）
+  - vendor/dsh-mobile-nav/ —— 第三方移动布局包（@dsh-external，MIT，经 gh contents 拉取）
+  - expo-app/ —— Android/iOS 原生壳（Expo/RN，用户确认的技术栈；src/lib/pair.ts 为逻辑源）
+  - harmony/ —— 鸿蒙壳源码骨架（ArkTS + ArkWeb，需 DevEco 编译）
+- docs/ —— 设计与审计；docs/desktop-guardian-profile-remote-design.md 为托盘三件套设计稿；docs/mobile-access-design.md 为移动端设计稿，原型见 docs/prototypes/；docs/agents/ 为 agent 协作文档
 - .github/workflows/release.yml —— tag v* 双平台构建 + draft release + 自动 release notes
 - SKILL.md / README.md（README 部分描述已过时：实际已改为 --patch 注入 + 局部 chrome，
   不再 plugin add / 接管 root slot；以代码为准）
+
+## 手机访问（mobile）关键契约
+
+- 三种访问身份：属主（同机 loopback 直连 lane、无 X-Forwarded-For）＝控制端点
+  （mint/devices/stop/events/probe）放行；已配对设备（隧道 + 会话 cookie）＝代理全量；
+  匿名（隧道）= 仅 /pair 与 /api/pair/accept。反代 auth 无路径前缀豁免（防归一化绕过）。
+- lane 改写反代默认 127.0.0.1:3091（settings.yaml dsh-desktop-tauriapp: lane_port，env
+  DSH_MOBILE_LANE_PORT 优先）；桌面 spawn dsh 时注入 DSH_MOBILE_LANE_PORT /
+  DSH_MOBILE_ENABLED / DSH_DESKTOP_PORT / DSH_CLOUDFLARED_BIN。
+- 桌面三包注入链路：build.rs staging 内嵌（desktop + dsh-mobile-access + @dsh-external/dsh-mobile-nav）
+  → materialize 挂共享池 → desktop-plugin-inject.yml 三行 --patch。
+- 设备会话在内存（重启需重配对）；持久化（$DSH_HOME 0600 文件）为待办。
+- 测试：mobile-access `npm test`（node 18 例）、shell-web 3 例、vendor 1 例、
+  expo-app `npm test`（vitest 7 例）；cargo test 10 例。
 
 ## 已知注意事项（血泪坑）
 
