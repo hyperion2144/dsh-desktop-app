@@ -82,3 +82,23 @@ export function readSettingsString(subKey) {
   }
   return String(raw);
 }
+
+// 读取任意顶层块下的子键标量（如 `ui-theme:` 块的 `preference: dark`）。
+// 只做「顶层块 + 二级键」的简单文本解析，不动 YAML 复杂结构。
+export function readTopLevelBlockKey(block, subKey) {
+  let lines;
+  try {
+    lines = fs.readFileSync(settingsPath(), 'utf8').split('\n');
+  } catch {
+    return null;
+  }
+  const top = lines.findIndex((l) => new RegExp(`^${block}:\\s*$`).test(l));
+  if (top < 0) return null;
+  for (let i = top + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^\S/.test(l) && l.trim()) break; // 下一个顶层键
+    const m = l.match(/^  ([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (m && m[1] === subKey) return m[2].trim();
+  }
+  return null;
+}

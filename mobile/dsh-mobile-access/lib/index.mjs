@@ -3,11 +3,23 @@
 import http from 'node:http';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { createRewriteProxy, POLYFILL, desktopEnvPatchScript } from './proxy.mjs';
+import { createRewriteProxy, POLYFILL, LOOPBACK_HOSTNAME_PATCH, THEME_SYNC_PATCH } from './proxy.mjs';
 import { PairingStore, createFileStorage, deviceNameFromUA } from './pairing.mjs';
 import { selectLanIPv4, buildPairLink, buildHttpPairLink, normalizeRemote } from './links.mjs';
-import { readSettingsString, writeSettingsKey } from './settings.mjs';
+import { readSettingsString, writeSettingsKey, readTopLevelBlockKey } from './settings.mjs';
 import { resolveCloudflared } from './cloudflared.mjs';
+
+/** 读取桌面端 ui-theme.preference（'dark' | 'light' | 'system' | null），供注入脚本同步远程视觉。 */
+function readUiThemePreference() {
+  try {
+    const raw = readTopLevelBlockKey('ui-theme', 'preference');
+    if (raw == null) return null;
+    const m = String(raw).match(/^"(.*)"$/s);
+    return (m ? JSON.parse(m[1]) : String(raw).trim()) || null;
+  } catch {
+    return null;
+  }
+}
 
 export function createMobileAccessService(opts = {}) {
   const {
@@ -26,7 +38,16 @@ export function createMobileAccessService(opts = {}) {
   const proxy = createRewriteProxy({
     upstreamHost,
     upstreamPort,
-    inject: [POLYFILL, desktopEnvPatchScript(platform)],
+    // 仅注入 POLYFILL + LOOPBACK_HOSTNAME_PATCH + THEME_SYNC_PATCH（顺序：补丁先于 polyfill、先于 dsh scripts）。
+    // ⚠️ 不注入 desktopEnvPatchScript：对齐 pocket 行为——只在 DSH Desktop 壳内注入，
+    // 给远程浏览器强制补 dsh-desktop-mode=compatibility 会让 dsh-plugin-desktop 等
+    // 走「桌面分支」假设 Tauri IPC、皮肤 mount 时序，远程浏览器没 __TAURI__ 也没准备好
+    // 的 DOM → classList null / 皮肤不加载（§2.2）。POLYFILL 单独无害。
+    // LOOPBACK_HOSTNAME_PATCH：已证实浏览器禁止伪造 hostname（configurable:false），
+    // 该补丁不再生效，保留仅为记录。THEME_SYNC_PATCH 是视觉兜底方案：读 /api/pair/info
+    // 的 uiTheme 强制 body[data-ds-dark-theme]，让远程端背景与桌面一致（设置项显示值
+    // 仍为 system——dsh 官方 memory 模式限制）。
+    inject: [LOOPBACK_HOSTNAME_PATCH, THEME_SYNC_PATCH, POLYFILL],
     auth: (req) => {
       // 配对门禁：所有到达反代本体的路径都必须是已配对设备（携带会话 cookie）。
       // 不做任何 /api/pair/* 前缀豁免——配对/控制路由全部由 routePairing 先行处理，
@@ -75,6 +96,7 @@ export function createMobileAccessService(opts = {}) {
   // 否则从 GitHub/ghproxy 等多镜像下载到缓存），全过程异步，phase 字段实时同步状态供 UI 轮询。
   function startTunnel(bin, lanePort) {
     stopTunnel();
+    tunnel.stopping = false;  // stopTunnel 保留 stopping=true 等子进程 exit，本轮启动需复位允许 tryParse
     tunnel.phase = 'resolving'
     tunnel.detail = bin ? `启动 ${bin}` : '正在解析 cloudflared…'
     tunnel.message = ''
@@ -106,6 +128,11 @@ export function createMobileAccessService(opts = {}) {
           tunnel.phase = 'error'
           tunnel.message = String(e?.message ?? e)
           store.emit('tunnel', { url: null, reason: 'spawn-failed', message: tunnel.message })
+          return
+        }
+        // 异步下载/解析期间用户可能已点停止 → 立即 kill 这个孤儿进程
+        if (tunnel.stopping) {
+          try { child.kill() } catch { /* noop */ }
           return
         }
         tunnel.child = child
@@ -146,7 +173,12 @@ export function createMobileAccessService(opts = {}) {
         child.on('exit', () => {
           clearTimeout(timer)
           if (tunnel.child === child) tunnel.child = null
+          // 仅在「非用户主动 stop」时把 phase 复位到 idle；stop 路径下 stopTunnel 已立刻写 idle，
+          // 这里再写一次也无害（幂等），但跳过 error 状态（崩溃应保留 error 让 UI 显示诊断）
           if (tunnel.phase !== 'error') tunnel.phase = 'idle'
+          if (tunnel.detail === '连接 Cloudflare 边缘（通常 5-30 秒）…') tunnel.detail = ''
+          // 子进程已退出，stopping 复位允许下次 start
+          tunnel.stopping = false
         })
         child.on('_cf_timeout', () => {
           clearTimeout(timer)
@@ -167,14 +199,22 @@ export function createMobileAccessService(opts = {}) {
 
   // 停止隧道（kill 子进程，保留 bin 配置）。
   function stopTunnel() {
-    if (tunnel.child) {
+    const ch = tunnel.child;
+    if (ch) {
       tunnel.stopping = true;
-      try { tunnel.child.kill(); } catch { /* noop */ }
       tunnel.child = null;
+      try { ch.kill(); } catch { /* noop */ }
+      // SIGKILL 兜底：cloudflared 偶发不响应 SIGTERM（边缘网络残留），3s 后强杀
+      const hardKill = setTimeout(() => { try { ch.kill('SIGKILL') } catch { /* noop */ } }, 3000);
+      if (typeof hardKill.unref === 'function') hardKill.unref();
     }
     tunnel.startedAt = 0;
     tunnel.url = null;
-    tunnel.stopping = false;
+    tunnel.phase = 'idle';        // 立即复位，UI 立刻不显示"运行中"
+    tunnel.detail = '';
+    tunnel.message = '';
+    // tunnel.stopping 保持 true，由 child.on('exit') 在实际退出时复位；
+    // 否则 kill→exit 之间 cloudflared 最后一帧 stdout 会触发 tryParse 把 url/phase 复活
   }
 
   // 配对/授权路由（先于上游转发）：
@@ -231,8 +271,9 @@ export function createMobileAccessService(opts = {}) {
       return true;
     }
     if (path === '/api/pair/info' && req.method === 'GET') {
-      // 仅属主：配对候选地址（client 生成 http(s) 配对链接/二维码用）。
-      if (!owner) { unpaired401(); return true; }
+      // 属主 + 已配对设备：配对候选地址（二维码/链接用）；已配对设备需要 uiTheme
+      // 让注入脚本同步桌面主题偏好（视觉一致，§2.2）。
+      if (!owner && !authed) { unpaired401(); return true; }
       const lanIp = selectLanIPv4(os.networkInterfaces?.() ?? {});
       let customTunnelUrl = customTunnel;
       if (!customTunnelUrl) {
@@ -243,6 +284,7 @@ export function createMobileAccessService(opts = {}) {
         lanIp,
         tunnelUrl: tunnel.url,
         customTunnelUrl,
+        uiTheme: readUiThemePreference(),
       });
       return true;
     }

@@ -330,7 +330,8 @@ function buildPanelDom() {
   cfStop.onclick = () => withBusy(cfStop, async () => {
     try {
       await lane('/api/pair/cloudflared', { method: 'POST', body: { action: 'stop' } })
-      cfState = { bin: cfState.bin, url: null, running: false, reason: null }
+      // 立即清空所有"运行中"相关字段，避免下一次 2s 轮询前 UI 还显示旧 url/phase
+      cfState = { bin: cfState.bin, url: null, running: false, reason: null, phase: 'idle', detail: '已停止', message: '' }
       renderCf()
     } catch (e) {
       cfStatus.textContent = '停止失败：' + e.message
