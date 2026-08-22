@@ -2,30 +2,46 @@ import { router } from '@kit.ArkUI';
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { Theme } from '../common/Theme';
-import { PairLogic, PairEntry, PairInput } from '../common/PairLogic';
+import { createPairStore, PairLogic, PairEntry, PairInput, PairStorage } from '../common/PairLogic';
 
-function makeStorage(ctx: common.UIAbilityContext): PairStorageAdapter {
-  return new PairStorageAdapter(ctx);
-}
-
-// 简化存储适配器：内存态 + preferences 落盘
-class PairStorageAdapter {
-  private ctx: common.UIAbilityContext;
+// 简化存储适配器：内存态 + preferences 落盘。
+// preferences 实例只能经异步 getPreferences() 获取（无 getPreferencesSync）；
+// 初始化完成前读写先落内存，实例就绪后同步到持久化（getSync/putSync 需实例）。
+class PairStorageAdapter implements PairStorage {
+  private pref: preferences.Preferences | null = null;
   private mem: Map<string, string> = new Map();
 
-  constructor(ctx: common.UIAbilityContext) {
-    this.ctx = ctx;
+  async init(ctx: common.UIAbilityContext): Promise<void> {
+    try {
+      this.pref = await preferences.getPreferences(ctx, 'dsh-mobile');
+      // 实例就绪后把内存中的待持久化数据刷下去
+      this.mem.forEach((v, k) => {
+        this.pref?.putSync(k, v);
+      });
+      if (this.mem.size > 0) {
+        this.pref?.flush();
+      }
+    } catch (e) {
+      // 读取失败仅退化为内存态（列表不丢，重启回默认）
+    }
   }
 
   getItem(key: string): string | null {
-    return this.mem.get(key) ?? null;
+    const cached = this.mem.get(key);
+    if (cached !== undefined) return cached;
+    if (this.pref != null) {
+      const v = this.pref.getSync(key, '') as string;
+      if (v !== '') return v;
+    }
+    return null;
   }
 
   setItem(key: string, value: string): void {
     this.mem.set(key, value);
-    const pref = preferences.getPreferencesSync(this.ctx, { name: 'dsh-mobile' });
-    pref.putSync(key, value);
-    pref.flush();
+    if (this.pref != null) {
+      this.pref.putSync(key, value);
+      this.pref.flush();
+    }
   }
 }
 
@@ -37,12 +53,16 @@ struct Index {
   @State token: string = '';
   @State err: string = '';
   @State loaded: boolean = false;
-  private store: PairStorageAdapter | null = null;
+  private store: PairStorageAdapter = new PairStorageAdapter();
 
   aboutToAppear(): void {
     const ctx = getContext(this) as common.UIAbilityContext;
-    this.store = makeStorage(ctx);
-    this.reload();
+    // preferences 实例异步就绪后刷新列表（就绪前为空列表，不阻塞 UI）
+    this.store.init(ctx).then(() => {
+      this.reload();
+    }).catch(() => {
+      this.reload();
+    });
     // 深链参数：EntryAbility 放入 AppStorage
     const deep = AppStorage.get<string>('pairDeepLink') ?? '';
     if (deep) {
@@ -52,8 +72,7 @@ struct Index {
   }
 
   reload(): void {
-    if (this.store == null) return;
-    const st = PairLogic.createPairStore(this.store);
+    const st = createPairStore(this.store);
     this.pairs = st.list();
     this.loaded = true;
   }
@@ -75,8 +94,7 @@ struct Index {
   }
 
   addAndEnter(p: PairInput, name: string): void {
-    if (this.store == null) return;
-    const st = PairLogic.createPairStore(this.store);
+    const st = createPairStore(this.store);
     st.add({ token: p.token, base: p.base, name: name });
     st.active(p.base);
     this.reload();
@@ -86,8 +104,7 @@ struct Index {
   }
 
   remove(base: string): void {
-    if (this.store == null) return;
-    const st = PairLogic.createPairStore(this.store);
+    const st = createPairStore(this.store);
     st.remove(base);
     this.reload();
   }

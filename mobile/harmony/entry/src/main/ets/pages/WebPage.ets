@@ -12,7 +12,7 @@ struct WebPage {
   private controller: webview.WebviewController = new webview.WebviewController();
 
   aboutToAppear(): void {
-    const params = router.getParams() as Record<string, string>;
+    const params = (router.getParams() ?? {}) as Record<string, string>;
     this.base = params['base'] ?? '';
     this.url = params['url'] ?? PairLogic.buildEnterUrl(this.base);
   }

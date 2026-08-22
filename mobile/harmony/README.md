@@ -8,18 +8,19 @@ HarmonyOS NEXT 手机访问壳（ArkTS + ArkWeb），与 H5 壳 / Expo RN 壳共
   生效，ArkWeb 不做 DOM 注入
 - 配对输入：`dsh-mobile://pair?token=..&base=..` 深链（EntryAbility 透传）或
   `host:端口` + 独立令牌；解析逻辑 `common/PairLogic.ets`（自 shell-web/lib.mjs 移植）
-- 权限：`ohos.permission.INTERNET`；明文 HTTP 经 `networkSecurityConfig` 放行
-  （局域网配对需 HTTP；发布前应收窄）
+- 权限：`ohos.permission.INTERNET`。局域网 HTTP 明文访问策略：离线参考快照（API 12-23）
+  未收录 module.json5 的网络安全配置字段，未写未验证字段；HTTP 加载受限与否
+  待 DevEco 真机联调确认（若受限需按当前 SDK 官方文档补网络安全配置）。
 
 ## 结构
 
 ```
 AppScope/app.json5                    应用名/包名 app.dsh.mobile
-entry/src/main/module.json5           module 配置 + INTERNET 权限 + networkSecurityConfig
+entry/src/main/module.json5           module 配置 + INTERNET 权限
 entry/src/main/ets/entryability/     EntryAbility（深链透传）
 entry/src/main/ets/common/           Theme.ets（设计令牌）、PairLogic.ets（配对逻辑）
 entry/src/main/ets/pages/            Index.ets（配对管理）、WebPage.ets（ArkWeb）
-entry/src/main/resources/             media 图标（占位）、string/color、profile（pages/网络配置）
+entry/src/main/resources/             media 图标（占位）、string/color、profile（pages）
 ```
 
 ## 构建
@@ -32,6 +33,6 @@ entry/src/main/resources/             media 图标（占位）、string/color、
 ## 待办
 
 - media 图标为 4x4 占位 PNG，上线前替换正式图标；
-- `networkSecurityConfig` 的字段名以当前 DevEco SDK 版本为准（骨架按通行走法）；
-- 深链注册（module.json5 skills/actions 的 uri 匹配）待 DevEco 下按实际 SDK 补全；
+- 深链注册（module.json5 skills/actions 的 uri 匹配）与明文 HTTP 策略待 DevEco
+  真机联调按当前 SDK 补全；
 - ArkWeb 对 WS 长连接与大 DOM 性能需真机验证（design §5 开放问题）。

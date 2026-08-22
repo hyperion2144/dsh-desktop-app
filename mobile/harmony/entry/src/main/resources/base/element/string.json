@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_desc",
       "value": "DeepSeek Harness 手机访问入口"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "DeepSeek 手机访问"
     }
   ]
 }

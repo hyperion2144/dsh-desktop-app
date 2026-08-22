@@ -1,7 +1,0 @@
-{
-  "network-security-config": {
-    "base-config": {
-      "cleartext-traffic-permitted": true
-    }
-  }
-}
