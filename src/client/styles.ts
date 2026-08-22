@@ -20,6 +20,12 @@ body[data-dsh-desktop-tauriapp-mode="advanced"] { margin: 0; }
 .dshDesktopCaptionButton:hover { background: rgba(128, 128, 128, 0.18); }
 .dshDesktopCaptionButton-close:hover { background: #e81123; color: #fff; }
 .dshDesktopCaptionButton svg { width: 12px; height: 12px; display: block; }
+/* 侧边栏内容区滚动（local-chrome.ts ensureSidebarScroll 打稳定标记；内联 overflow
+   已覆盖 stock 的 hidden，这里只做滚动条观感与滚动链收敛）。 */
+[data-dsh-desktop-scroll] { overscroll-behavior: contain; scrollbar-width: thin; }
+[data-dsh-desktop-scroll]::-webkit-scrollbar { width: 8px; height: 8px; }
+[data-dsh-desktop-scroll]::-webkit-scrollbar-thumb { background: var(--dsw-alias-scrollbar-bg-l2, rgba(128,128,128,0.4)); border-radius: 4px; }
+[data-dsh-desktop-scroll]::-webkit-scrollbar-thumb:hover { background: var(--dsw-alias-scrollbar-hover-l2, rgba(128,128,128,0.6)); }
 `
 
 /** Install and remove the advanced shell's local-window-chrome styles. @returns the style disposer. */

@@ -156,6 +156,30 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
     })
   }
 
+  /**
+   * 侧边栏内容区滚动修复：会话标题过长会把内容撑宽，而侧边栏列宽是限死的
+   * （ui-layout 的 sidebarCol 与 ui-sidebar 的 regionArea 都是 overflow:hidden），
+   * 最右侧内容被裁掉且无滚动条。css module 类名随版本漂移，这里按结构定位
+   * （sidebar → SidebarRoot → flexGrow:1 的内容区），打稳定标记 +
+   * 内联 overflow:auto（内联优先级最高，确定性覆盖 stock 的 hidden）。
+   */
+  const SIDEBAR_SCROLL_MARK = 'data-dsh-desktop-scroll'
+  let scrollRegion: HTMLElement | null = null
+  const ensureSidebarScroll = (sidebar: HTMLElement): void => {
+    const root = Array.from(sidebar.children).find((el): el is HTMLElement => el instanceof HTMLElement)
+    if (root === undefined) return
+    // region = SidebarRoot 里 flex:1 的内容区（logoRow/newSession/footArea 均 flex:none）
+    const region = Array.from(root.children).find((el): el is HTMLElement => {
+      return el instanceof HTMLElement && getComputedStyle(el).flexGrow === '1'
+    })
+    if (region === undefined) return
+    scrollRegion = region
+    if (region.getAttribute(SIDEBAR_SCROLL_MARK) === null) {
+      region.setAttribute(SIDEBAR_SCROLL_MARK, '')
+    }
+    region.style.overflow = 'auto'
+  }
+
   const sync = () => {
     const layout = locateLayout()
     if (layout === null) {
@@ -165,6 +189,7 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
     }
     attempts = 0
     const { frame, sidebar, center } = layout
+    ensureSidebarScroll(sidebar)
     const sidebarWidth = sidebar.offsetWidth
     // 底部状态条：内容行让出一整行（所有平台），状态条覆盖其上
     sidebar.style.paddingBottom = `${STATUS_BAR_HEIGHT}px`
@@ -259,6 +284,12 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
       found.sidebar.style.paddingTop = ''
       found.sidebar.style.paddingBottom = ''
       if (found.center !== null) found.center.style.paddingTop = ''
+    }
+    // 还原侧边栏滚动修复（HMR/停用后不留内联样式与标记）
+    if (scrollRegion !== null) {
+      scrollRegion.style.overflow = ''
+      scrollRegion.removeAttribute(SIDEBAR_SCROLL_MARK)
+      scrollRegion = null
     }
     host.remove()
   }
