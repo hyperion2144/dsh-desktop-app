@@ -1130,8 +1130,11 @@ fn desktop_plugin_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
-/// 桌面插件 --patch 注入清单：桌面插件 + 手机访问（dsh-mobile-access）+ 移动布局
-/// （@dsh-external/dsh-mobile-nav）三行包名；包实体按共享模块池
+/// 桌面插件 --patch 注入清单：当前只注入桌面插件自身一行。
+/// 手机访问（dsh-mobile-access）与移动布局（@dsh-external/dsh-mobile-nav）暂不注入：
+/// dsh-mobile-access 的 client.js 是普通 ES module，dsh client-modules 加载器要求
+/// __ModuleLoader__.load 包裹格式，注入会导致 loader 启动失败（待 #9 打包后恢复多行）。
+/// 包实体按共享模块池
 /// （$DSH_HOME/profiles/node_modules）解析——profile bundles 无需注册，
 /// 网页侧 client 照常挂载（参考项目 anywhere-labs/deepseek-harness-desktop 机制）。
 /// 写入 app 数据目录，幂等。
@@ -1141,7 +1144,7 @@ fn desktop_plugin_patch_path(app: &tauri::AppHandle) -> PathBuf {
     };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("desktop-plugin-inject.yml");
-    let content = "- insert:\n    - id: dsh-desktop-tauriapp\n      name: dsh-desktop-tauriapp\n    - id: dsh-mobile-access\n      name: dsh-mobile-access\n    - id: dsh-mobile-nav\n      name: @dsh-external/dsh-mobile-nav\n";
+    let content = "- insert:\n    - id: dsh-desktop-tauriapp\n      name: dsh-desktop-tauriapp\n";
     let stale = std::fs::read_to_string(&path).map(|t| t != content).unwrap_or(true);
     if stale {
         let _ = std::fs::write(&path, content);

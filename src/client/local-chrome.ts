@@ -157,27 +157,70 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
   }
 
   /**
-   * 侧边栏内容区滚动修复：会话标题过长会把内容撑宽，而侧边栏列宽是限死的
-   * （ui-layout 的 sidebarCol 与 ui-sidebar 的 regionArea 都是 overflow:hidden），
-   * 最右侧内容被裁掉且无滚动条。css module 类名随版本漂移，这里按结构定位
-   * （sidebar → SidebarRoot → flexGrow:1 的内容区），打稳定标记 +
-   * 内联 overflow:auto（内联优先级最高，确定性覆盖 stock 的 hidden）。
+   * 侧边栏宽度修复（浏览器元素定位实证）：`div[data-slot="sidebar"]` 下第一个 div
+   * （.hHd-Xa_root）带内联 `flex-wrap: wrap; width: 420px`——flex-wrap 让超长标题
+   * 折行并把整段撑宽到 420px，超过外层侧边栏宽度被裁断（勾掉 flex-wrap 即正常）。
+   * 主修复：定位 [data-slot="sidebar"] 的 first-child → flex-wrap:nowrap（消除折行
+   * 撑宽），叠加 width/max-width 锁（内容死盯外层宽度，外层可拖拽跟随）、
+   * overflow-x:auto 兜底（个别元素不收缩时出横向滚动条）；子树铺 min-width:0
+   * 让标题回到 ellipsis。打稳定标记 + 内联样式，dispose 时全部还原。
    */
   const SIDEBAR_SCROLL_MARK = 'data-dsh-desktop-scroll'
   let scrollRegion: HTMLElement | null = null
+  let scrollRoot: HTMLElement | null = null
+  const minWidthPatched: HTMLElement[] = []
+  const overflowXPatched: HTMLElement[] = []
+  const isScrollableY = (el: HTMLElement): boolean => {
+    const oy = getComputedStyle(el).overflowY
+    return oy === 'auto' || oy === 'scroll'
+  }
   const ensureSidebarScroll = (sidebar: HTMLElement): void => {
-    const root = Array.from(sidebar.children).find((el): el is HTMLElement => el instanceof HTMLElement)
-    if (root === undefined) return
+    // 【定位】优先稳定 slot 标记 [data-slot="sidebar"] 的 first-child（.hHd-Xa_root）；
+    // 兜底结构定位（sidebar 列的第一子元素）。
+    let root: HTMLElement | null = null
+    const slot = document.querySelector('[data-slot="sidebar"]')
+    if (slot !== null) {
+      root = Array.from(slot.children).find((el): el is HTMLElement => el instanceof HTMLElement) ?? null
+    }
+    if (root === null) {
+      root = Array.from(sidebar.children).find((el): el is HTMLElement => el instanceof HTMLElement) ?? null
+    }
+    if (root === null) return
+    // 【主修复】flex-wrap:wrap → nowrap（用户实证根因）；宽度锁到外层；overflow-x 兜底
+    root.style.flexWrap = 'nowrap'
+    root.style.width = '100%'
+    root.style.maxWidth = '100%'
+    root.style.minWidth = '0'
+    root.style.overflowX = 'auto'
+    scrollRoot = root
     // region = SidebarRoot 里 flex:1 的内容区（logoRow/newSession/footArea 均 flex:none）
     const region = Array.from(root.children).find((el): el is HTMLElement => {
       return el instanceof HTMLElement && getComputedStyle(el).flexGrow === '1'
     })
     if (region === undefined) return
     scrollRegion = region
-    if (region.getAttribute(SIDEBAR_SCROLL_MARK) === null) {
-      region.setAttribute(SIDEBAR_SCROLL_MARK, '')
+    // 【辅修复】收缩链：子树所有 flex 容器铺 min-width:0；纵向滚动容器补 overflow-x:auto
+    minWidthPatched.length = 0
+    const visit = (el: HTMLElement): void => {
+      const style = getComputedStyle(el)
+      if (style.display.includes('flex')) {
+        el.style.minWidth = '0'
+        minWidthPatched.push(el)
+      }
+      if (isScrollableY(el)) {
+        el.style.overflowX = 'auto'
+        overflowXPatched.push(el)
+      }
+      for (const child of el.children) {
+        if (child instanceof HTMLElement) visit(child)
+      }
     }
-    region.style.overflow = 'auto'
+    for (const child of Array.from(region.children)) {
+      if (child instanceof HTMLElement) visit(child)
+    }
+    if (root.getAttribute(SIDEBAR_SCROLL_MARK) === null) {
+      root.setAttribute(SIDEBAR_SCROLL_MARK, '')
+    }
   }
 
   const sync = () => {
@@ -285,10 +328,21 @@ export function installLocalChrome(platform: DesktopClientPlatform): () => void 
       found.sidebar.style.paddingBottom = ''
       if (found.center !== null) found.center.style.paddingTop = ''
     }
-    // 还原侧边栏滚动修复（HMR/停用后不留内联样式与标记）
+    // 还原侧边栏宽度修复（HMR/停用后不留内联样式与标记）
+    for (const el of minWidthPatched) el.style.minWidth = ''
+    for (const el of overflowXPatched) el.style.overflowX = ''
+    minWidthPatched.length = 0
+    overflowXPatched.length = 0
+    if (scrollRoot !== null) {
+      scrollRoot.style.flexWrap = ''
+      scrollRoot.style.width = ''
+      scrollRoot.style.maxWidth = ''
+      scrollRoot.style.minWidth = ''
+      scrollRoot.style.overflowX = ''
+      scrollRoot.removeAttribute(SIDEBAR_SCROLL_MARK)
+      scrollRoot = null
+    }
     if (scrollRegion !== null) {
-      scrollRegion.style.overflow = ''
-      scrollRegion.removeAttribute(SIDEBAR_SCROLL_MARK)
       scrollRegion = null
     }
     host.remove()
